@@ -11,6 +11,7 @@ import std/os
 --warningAsError:StdPrefix
 
 task build, "build Adding Space (Debug mode)":
+  --define:nari.vulkanDebug
   switch("out", "build/AddingSpace")
   setCommand "c", "src/game_main.nim"
 

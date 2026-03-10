@@ -7,6 +7,7 @@ import pkg/chronicles
 
 var siwinGlobals = newSiwinGlobals()
 vkPreload() # load vulkan
+var vkInstance = VkInstance(0)
 
 proc initGameWindow(): window.Window =
   var appInfo = newVkApplicationInfo(
@@ -17,30 +18,37 @@ proc initGameWindow(): window.Window =
     apiVersion = vkApiVersion1_3
   )
 
-  let exts = getRequiredVulkanExtensions()
+  var exts = getRequiredVulkanExtensions()
+  when defined(nari.vulkanDebug):
+    # info "Vulkan validation layers enabled"
+    exts.add "VK_EXT_debug_utils"
+    const validationLayers = [cstring"VK_LAYER_KHRONOS_validation"]
   let extsC = exts.mapIt(cstring(it))
 
   var instanceCreateInfo = VkInstanceCreateInfo(
     sType: VkStructureType.InstanceCreateInfo,
     pApplicationInfo: appInfo.addr,
-    enabledLayerCount: 0,
-    ppEnabledLayerNames: nil,
+    enabledLayerCount:
+      when defined(nari.vulkanDebug): validationLayers.len
+      else: 0,
+    ppEnabledLayerNames:
+      when defined(nari.vulkanDebug): cast[cstringArray](validationLayers[0].addr)
+      else: nil,
     enabledExtensionCount: uint32(extsC.len),
     ppEnabledExtensionNames:
       if extsC.len == 0: nil
       else: cast[cstringArray](extsC[0].addr),
   )
 
-  var instance = VkInstance(0)
-  if vkCreateInstance(instanceCreateInfo.addr, nil, instance.addr) != VKSuccess:
+  if vkCreateInstance(instanceCreateInfo.addr, nil, vkInstance.addr) != VKSuccess:
     quit("Failed to create Vulkan instance")
-
-  vkInit(instance)
+  
+  vkInit(vkInstance)
 
   # it's incredible but we need to create a window bound to the vulkan instance
   newVulkanWindow(
     siwinGlobals,
-    cast[pointer](instance),
+    cast[pointer](vkInstance),
     title = "Adding Space")
 
 
