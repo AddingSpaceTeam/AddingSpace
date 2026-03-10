@@ -20,7 +20,7 @@ proc initGameWindow(): window.Window =
 
   var exts = getRequiredVulkanExtensions()
   when defined(nari.vulkanDebug):
-    # info "Vulkan validation layers enabled"
+    info "Vulkan validation layers requested"
     exts.add "VK_EXT_debug_utils"
     const validationLayers = [cstring"VK_LAYER_KHRONOS_validation"]
   let extsC = exts.mapIt(cstring(it))
