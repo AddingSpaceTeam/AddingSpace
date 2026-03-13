@@ -5,27 +5,49 @@ import pkg/siwin
 import pkg/vulkan
 import pkg/chronicles
 
+type
+  QueueFamilyIndices = object
+    # maybe will be needed in future
+    graphicsFamily: uint32
+
+  QueueFamilies = object
+    # maybe will be needed in future
+    graphicsFamily: VkQueueFamilyProperties
+
+  NariInstance = object
+    vkInstance: VkInstance
+    devices: seq[VkPhysicalDevice] # TODO: rename to pDevices
+    deviceId: int # TODO: implement selection
+    familyIndices: QueueFamilyIndices
+    families: QueueFamilies
+
+    surface: VkSurfaceKHR
+    device: VkDevice
+    queue: VkQueue
+
 var siwinGlobals = newSiwinGlobals()
 vkPreload() # load vulkan
-var vkInstance = VkInstance(0)
 
-proc initGameWindow(): window.Window =
+using nariInstance: var NariInstance
+proc initGameWindow(nariInstance): window.Window =
   var appInfo = newVkApplicationInfo(
     pApplicationName = "Adding Space",
     applicationVersion = vkMakeVersion(0, 1, 0, 0),
     pEngineName = "Renderer",
     engineVersion = vkMakeVersion(0, 1, 0, 0),
-    apiVersion = vkApiVersion1_3
+    apiVersion = vkApiVersion1_4
   )
 
   var exts = getRequiredVulkanExtensions()
+  exts.add "VK_KHR_surface"
+  # exts.add "VK_KHR_swapchain_maintenance1"
   when defined(nari.vulkanDebug):
     info "Vulkan validation layers requested"
     exts.add "VK_EXT_debug_utils"
     const validationLayers = [cstring"VK_LAYER_KHRONOS_validation"]
   let extsC = exts.mapIt(cstring(it))
 
-  var instanceCreateInfo = VkInstanceCreateInfo(
+  var instanceCi = VkInstanceCreateInfo(
     sType: VkStructureType.InstanceCreateInfo,
     pApplicationInfo: appInfo.addr,
     enabledLayerCount:
@@ -40,21 +62,150 @@ proc initGameWindow(): window.Window =
       else: cast[cstringArray](extsC[0].addr),
   )
 
-  if vkCreateInstance(instanceCreateInfo.addr, nil, vkInstance.addr) != VKSuccess:
+  if vkCreateInstance(instanceCi.addr, nil, nariInstance.vkInstance.addr) != VKSuccess:
     quit("Failed to create Vulkan instance")
   
-  vkInit(vkInstance)
+  vkInit(nariInstance.vkInstance)
+  loadVK_KHR_surface()
+  # loadVK_KHR_swapchain_maintenance1()
 
   # it's incredible but we need to create a window bound to the vulkan instance
-  newVulkanWindow(
+  result = newVulkanWindow(
     siwinGlobals,
-    cast[pointer](vkInstance),
+    cast[pointer](nariInstance.vkInstance),
     title = "Adding Space")
+  
+  nariInstance.surface = cast[VkSurfaceKHR](result.vulkanSurface)
+
+proc findDevices(nariInstance) =
+  info "Grep device list"
+  var deviceCount = 0'u32
+  if vkEnumeratePhysicalDevices(
+    nariInstance.vkInstance,
+    deviceCount.addr, nil) != VKSuccess:
+      quit("Can't enumerate devices")
+  
+  nariInstance.devices = newSeq[VkPhysicalDevice](deviceCount)
+  if vkEnumeratePhysicalDevices(nariInstance.vkInstance, deviceCount.addr, nariInstance.devices[0].addr) != VKSuccess:
+    quit("Can't find devices")
+
+  for i in 0..<deviceCount:
+    var deviceProperties = VkPhysicalDeviceProperties2(
+      sType: PhysicalDeviceProperties2)
+    vkGetPhysicalDeviceProperties2(nariInstance.devices[i], deviceProperties.addr)
+    var s = ""
+    for i in deviceProperties.properties.deviceName:
+      if i == '\0': continue
+      s.add i
+    
+    info "Found device: ", device = s
+
+proc handleDeviceLost(res: VkResult, nariInstance): VkResult =
+  # Should be used for
+  # vkQueueSubmit, vkQueueSubmit2
+  # vkQueuePresentKHR, vkAcquireNextImageKHR
+  # vkQueueBindSparse, vkWaitForFences, vkGetFenceStatus,
+  # vkDeviceWaitIdle, vkQueueWaitIdle, vkEventGetStatus
+  # vkCreateDevice, vkCreateSwapchainKHR, vkAllocateMemory,
+  # vkMapMemory, vkBindBufferMemory, vkBindImageMemory,
+  # vkCreateGraphicsPipelines, vkCreateComputePipelines,
+  # vkGetQueryPoolResults, vkGetPipelineExecutablePropertiesKHR
+  
+  if res == VK_ERROR_DEVICE_LOST:
+    # TODO: add VK_EXT_device_fault to know why VK_ERROR_DEVICE_LOST happened
+    nariInstance.findDevices()
+  res
+
+# proc selectDevice(nariInstance) =
+
+proc findQueueFamilyIndices(nariInstance) =
+  var familyCount = 0'u32
+  vkGetPhysicalDeviceQueueFamilyProperties(
+    nariInstance.devices[nariInstance.deviceId],
+    familyCount.addr, nil)
+  
+  var families = newSeq[VkQueueFamilyProperties](familyCount)
+  vkGetPhysicalDeviceQueueFamilyProperties(
+    nariInstance.devices[nariInstance.deviceId],
+    familyCount.addr, families[0].addr
+  )
+  var i = 0'u32
+  for family in families:
+    if (family.queueFlags.uint32 and VkQueueGraphicsBit.uint32) > 0'u32:
+      nariInstance.families.graphicsFamily = family
+      nariInstance.familyIndices.graphicsFamily = i
+    inc i
+  
 
 
-let window = initGameWindow()
+  # TODO: add validation of nariInstance.families and nariInstance.familyIndices
+
+  var presentSupport = default(VkBool32)
+  discard vkGetPhysicalDeviceSurfaceSupportKHR(
+    nariInstance.devices[nariInstance.deviceId],
+    nariInstance.familyIndices.graphicsFamily, nariInstance.surface,
+    presentSupport.addr)
+  
+  if presentSupport.ord != 1:
+    quit("No presentation support found(")
+
+proc peekDevice(nariInstance) =
+  let qfpriorities = 1.0f
+  var queueCi = VkDeviceQueueCreateInfo(
+    sType: DeviceQueueCreateInfo,
+    queueFamilyIndex: nariInstance.familyIndices.graphicsFamily,
+    queueCount: 1,
+    pQueuePriorities: qfpriorities.addr)
+  
+  const deviceExtensions = [cstring"VK_KHR_swapchain", "VK_KHR_swapchain_maintenance1"]
+  
+  var enabledVk10Features = VkPhysicalDeviceFeatures(
+    samplerAnisotropy: VkBool32(1))
+  
+  var enabledVk12Features = VkPhysicalDeviceVulkan12Features(
+    sType: PhysicalDeviceVulkan12Features,
+    descriptorIndexing: VkBool32(1),
+    shaderSampledImageArrayNonUniformIndexing: VkBool32(1),
+    descriptorBindingVariableDescriptorCount: VkBool32(1),
+    runtimeDescriptorArray: VkBool32(1),
+    bufferDeviceAddress: VkBool32(1))
+  
+  var enabledVk13Features = VkPhysicalDeviceVulkan13Features(
+    sType: PhysicalDeviceVulkan13Features,
+    pNext: enabledVk12Features.addr,
+    synchronization2: VkBool32(1),
+    dynamicRendering: VkBool32(1))
+  
+  var deviceCI = VkDeviceCreateInfo(
+    sType: DeviceCreateInfo,
+    pNext: enabledVk13Features.addr,
+    queueCreateInfoCount: 1,
+    pQueueCreateInfos: queueCi.addr,
+    enabledExtensionCount: deviceExtensions.len.uint32,
+    ppEnabledExtensionNames: cast[cstringArray](deviceExtensions[0].addr),
+    pEnabledFeatures: enabledVk10Features.addr)
+  
+  if vkCreateDevice(
+    nariInstance.devices[nariInstance.deviceId],
+    deviceCI.addr, nil, nariInstance.device.addr
+    ) != VKSuccess: quit("Can't create device")
+  
+  info "Logical device created"
+  vkGetDeviceQueue(
+    nariInstance.device,
+    nariInstance.familyIndices.graphicsFamily,
+    0,
+    nariInstance.queue.addr)
+
+
+var nari = NariInstance()
+let window = initGameWindow(nari)
 let surface = cast[VkSurfaceKHR](window.vulkanSurface)
 info "Vulkan initialized", vksurface = cast[uint64](surface)
+
+nari.findDevices()
+nari.findQueueFamilyIndices()
+nari.peekDevice()
 
 run window, WindowEventsHandler(
   onResize: proc(e: ResizeEvent) =
