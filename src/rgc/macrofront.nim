@@ -1,5 +1,5 @@
 ## Compile dsl to rgir
-import ir, sem
+import ir, sem, bitabs
 import std/[macros, macrocache]
 
 const mcRgirCode = CacheSeq"rgc.rgirCode" # generated rgirCode
@@ -28,9 +28,10 @@ type
   IrBuilder = object
     dest: Builder
     passType: string
+    currentScopeName: string
     currentScopeKind: ScopeKind # ?maybe in the future it become Scope object
 
-proc parseSignature(b: var Builder, n: NimNode) =
+proc parseSignature(b: var Builder, n: NimNode): string =
   var signature: seq[string] = @[]
   n.getSignature(signature)
   var reached = No
@@ -64,6 +65,13 @@ proc parseSignature(b: var Builder, n: NimNode) =
   if Pub in modifiers: b.addIdent "pub"
   else: b.addEmpty()
 
+  name
+
+proc mangleName(b: IrBuilder; name: string): string =
+  if b.currentScopeName.len == 0:
+    raiseAssert "Missing owner scope for local symbol"
+  b.currentScopeName & "." & name
+
 proc parseCommand(b: var IrBuilder, n: NimNode) =
   # TODO: add check for scope
   assert n.kind == nnkCommand
@@ -71,7 +79,7 @@ proc parseCommand(b: var IrBuilder, n: NimNode) =
   of "input", "output":
     assert b.currentScopeKind == Toplevel
     b.dest.withTree n[0].strVal:
-      b.dest.addIdent n[1].strVal
+      b.dest.addSymbolDef b.mangleName(n[1].strVal)
       var s = n[2]
       assert s.kind == nnkStmtList # StmtList produced by `:`
       assert s.len == 1
@@ -89,6 +97,12 @@ proc parseCommand(b: var IrBuilder, n: NimNode) =
     b.dest.withTree "shader":
       b.dest.addIdent "fragment"
       b.dest.addIdent n[1].strVal # TODO: add CacheTable registry for actual const symbols
+
+  of "use":
+    assert b.currentScopeKind == Toplevel
+    b.dest.withTree "use":
+      b.dest.addEmpty()
+      # TODO: add b.dest.addSymUse b.mangleName(n[1].strVal)
 
   else: raiseAssert "Invalid command"
 
@@ -111,16 +125,20 @@ proc parseStmt(b: var IrBuilder, n: NimNode) =
   of nnkCall: parseCall(b, n)
   else: discard
 
-macro pass*(signature: untyped, code: untyped) =
+proc passOrModule*(signature: NimNode, code: NimNode, node: string) =
   var b = openBuilder()
-  var stmts = IrBuilder(dest: openBuilder(), currentScopeKind: Toplevel)
-
-  stmts.dest.withTree "stmts":
-    for i in code:
-      parseStmt(stmts, i)
   
-  b.withTree "pass":
-    b.parseSignature(signature)
+  b.withTree node:
+    let passName = b.parseSignature(signature) # TODO: it should init Scope object
+    var stmts = IrBuilder(
+      dest: openBuilder(),
+      currentScopeName: passName,
+      currentScopeKind: Toplevel)
+
+    stmts.dest.withTree "stmts":
+      for i in code:
+        parseStmt(stmts, i)
+
     if stmts.passType.len == 0: b.addEmpty()
     else: b.addIdent stmts.passType
     b.addBuilder(stmts.dest)
@@ -129,26 +147,26 @@ macro pass*(signature: untyped, code: untyped) =
   # echo treeRepr(code)
   mcRgirCode.add newStrLitNode(b.extract())
 
-macro module*(signature: untyped, code: untyped) =
-  var b = openBuilder()
-  
-  b.withTree "module":
-    b.parseSignature(signature)
-    b.addEmpty() # module body
+macro pass*(signature: untyped, code: untyped) =
+  passOrModule(signature, code, "pass")
 
-  # echo b.extract()
-  mcRgirCode.add newStrLitNode(b.extract())
+macro module*(signature: untyped, code: untyped) =
+  passOrModule(signature, code, "module")
 
 macro initGraph*(name: untyped) =
   var lit = createLiterals()
   var buf = createTokenBufVm()
   var rgir = ""
   for i in mcRgirCode:
+    echo "i: ", i
     rgir.add i.strVal
-
+  
+  # echo "RGIR DUMP: ", rgir
+  buf.addParLe lit.tags.getOrIncl("stmts")
   parse(rgir, lit, buf)
   buf.addParRi() # end of stmts
   when defined(rgc.dumpParsedRgir):
+    echo "RGIR:"
     echo beginRead(buf).toString(lit)
 
   var sem = SemContext[true](lit: lit)
@@ -162,5 +180,8 @@ when isMainModule:
 
     raster:
       shader lightingShader
+  
+  module myModule:
+    use mypass
 
   initGraph(myModule)
