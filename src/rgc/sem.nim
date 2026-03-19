@@ -11,13 +11,17 @@ type
   Node = object
     kind: NodeKind
     s: SymId
+  
+  Phase = enum
+    SymbolResolution
+    GraphGeneration
 
   SemContext*[Vm: static bool] = object
     when Vm:
-      dest: VmTokenBuf
+      dest*: VmTokenBuf
     else:
-      data: RtTokenBuf
-    
+      dest*: RtTokenBuf
+
     lit*: Literals
 
     graph*: Table[Node, seq[Node]]
@@ -42,6 +46,7 @@ type
     currentNode: Node
     currentPassKind: string # Currently I don't care about scopes
     exported*: Table[SymId, FileId] # exported node to it's file
+    currentPhase*: Phase
 
 proc passNode(s: SymId): Node = Node(kind: Pass, s: s)
 proc moduleNode(s: SymId): Node = Node(kind: Module, s: s)
@@ -51,71 +56,112 @@ proc skipParRi*(n: var Cursor) =
   assert n.kind == ParRi
   inc n
 
+proc take(c: var SemContext, n: var Cursor) {.inline.} =
+  if c.currentPhase == SymbolResolution:
+    c.dest.add n.load
+  inc n
+
+proc takeParRi(c: var SemContext, n: var Cursor) {.inline.} =
+  assert n.kind == ParRi
+  if c.currentPhase == SymbolResolution:
+    c.dest.addParRi()
+  inc n
+
+proc takeSkip(c: var SemContext, n: var Cursor) {.inline.} =
+  if c.currentPhase == SymbolResolution:
+    c.dest.takeTree(n)
+  else:
+    skip n
+
 proc semStmt*(c: var SemContext, n: var Cursor) =
-  echo "STMT: ", n.toString(c.lit)
-  echo n.stmtKind
   case n.stmtKind
   of PassS:
-    inc n
+    c.take n # (pass
     c.currentNode = passNode(n.symId)
-    inc n
+    c.take n # :name
     assert n.kind == DotToken # dyn pass is not supported
-    inc n
+    c.take n # .
     if n.kind == Ident and c.lit.strings[n.litId] == "pub":
       c.exported[c.currentNode.s] = FileId(0) # dummy file currently. TODO: implement
-    inc n
+    c.take n # pub
     c.currentPassKind = c.lit.strings[n.litID]
-    inc n
+    c.take n # passKind
     semStmt c, n
-    skipParRi n
+    c.takeParRi n
   of ModuleS:
-    inc n
+    c.take n # (module
     c.currentNode = moduleNode(n.symId)
-    inc n
-    inc n
-    inc n
-    inc n
+    c.take n # :name
+    c.take n # dyn
+    c.take n # pub
+    c.take n # passType
     semStmt c, n
-    skipParRi n
+    c.takeParRi n
   of StmtsS:
-    inc n
+    c.take n # (stmts
     while n.kind != ParRi:
       semStmt c, n
-    skipParRi n
+    c.takeParRi n
   of InputS:
-    inc n
-    c.graph.mgetOrPut(c.currentNode, @[]).add resourceNode(n.symId)
-    inc n
-    inc n
-    inc n
-    skipParRi n # ParRi
-    echo "Input"
+    c.take n # (input
+    case c.currentPhase
+    of SymbolResolution:
+      let sym = c.lit.syms.getOrIncl(c.lit.strings[n.litId])
+      c.dest.add symdefToken(sym)
+      inc n
+    of GraphGeneration:
+      c.graph.mgetOrPut(c.currentNode, @[]).add resourceNode(n.symId)
+      inc n
+    c.take n # type
+    c.take n # typeParam
+    c.takeParRi n
   of OutputS:
-    inc n
-    c.graph.mgetOrPut(resourceNode(n.symId), @[]).add c.currentNode
-    inc n
-    inc n
-    inc n
-    skipParRi n
-    echo "Output"
+    c.take n # (output
+    case c.currentPhase
+    of SymbolResolution:
+      let sym = c.lit.syms.getOrIncl(c.lit.strings[n.litId])
+      c.dest.add symdefToken(sym)
+      inc n
+    of GraphGeneration:
+      c.graph.mgetOrPut(resourceNode(n.symId), @[]).add c.currentNode
+      inc n
+    c.take n # type
+    c.take n # typeParam
+    c.takeParRi n
   of ShaderS:
-    echo "Shader"
-    skip n
-  of UseS: skip n
-  of NoStmt: raiseAssert"Holly fuck?"
-  else: raiseAssert"Unsupported"
+    c.takeSkip n
+  of UseS:
+    c.takeSkip n
+  of NoStmt: raiseAssert "Invalid statement"
+  else: raiseAssert "Unsupported statement"
 
-proc semcheck*(c: var SemContext, n: Cursor) =
-  var n = n
-  assert n.stmtKind == StmtsS
-  semStmt c, n
-  
+proc phasex*(c: var SemContext, phase: Phase, input: var TokenBuf): TokenBuf =
+  c.currentPhase = phase
+  when c.Vm:
+    c.dest = createTokenBufVm()
+  else:
+    c.dest = createTokenBuf()
+
+  var cursor = beginRead(input)
+  semStmt c, cursor
+  endRead(input)
+  result = ensureMove c.dest
+
+proc semcheck*(c: var SemContext, input: var TokenBuf) =
+  var resolved = phasex(c, SymbolResolution, input)
+
+  when defined(rgc.dumpSymbolResolution):
+    echo "After SymbolResolution:"
+    echo resolved.toString(c.lit)
+
+  c.dest = phasex(c, GraphGeneration, resolved)
+
   echo "Dependency graph:"
   template repr(n: Node): string =
     $n.kind & "(" & c.lit.syms[n.s] & ")"
-  
+
   for k, v in c.graph.pairs:
     var s = k.repr
     for i in v:
-      s.add "\n  <- " & i.repr    
+      s.add "\n  <- " & i.repr
     echo s

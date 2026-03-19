@@ -67,11 +67,6 @@ proc parseSignature(b: var Builder, n: NimNode): string =
 
   name
 
-proc mangleName(b: IrBuilder; name: string): string =
-  if b.currentScopeName.len == 0:
-    raiseAssert "Missing owner scope for local symbol"
-  b.currentScopeName & "." & name
-
 proc parseCommand(b: var IrBuilder, n: NimNode) =
   # TODO: add check for scope
   assert n.kind == nnkCommand
@@ -79,7 +74,7 @@ proc parseCommand(b: var IrBuilder, n: NimNode) =
   of "input", "output":
     assert b.currentScopeKind == Toplevel
     b.dest.withTree n[0].strVal:
-      b.dest.addSymbolDef b.mangleName(n[1].strVal)
+      b.dest.addIdent n[1].strVal
       var s = n[2]
       assert s.kind == nnkStmtList # StmtList produced by `:`
       assert s.len == 1
@@ -101,7 +96,7 @@ proc parseCommand(b: var IrBuilder, n: NimNode) =
   of "use":
     assert b.currentScopeKind == Toplevel
     b.dest.withTree "use":
-      b.dest.addEmpty()
+      b.dest.addIdent n[1].strVal
       # TODO: add b.dest.addSymUse b.mangleName(n[1].strVal)
 
   else: raiseAssert "Invalid command"
@@ -170,7 +165,7 @@ macro initGraph*(name: untyped) =
     echo beginRead(buf).toString(lit)
 
   var sem = SemContext[true](lit: lit)
-  semcheck(sem, beginRead(buf))
+  semcheck(sem, buf)
 
 
 when isMainModule:
