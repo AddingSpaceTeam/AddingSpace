@@ -1,4 +1,5 @@
-import ir, model, bitabs, lineinfos
+import ir, bitabs, lineinfos
+import tagmodel/model
 import std/tables
 
 type
@@ -63,7 +64,17 @@ proc semStmt*(c: var SemContext, n: var Cursor) =
     inc n
     while n.kind != ParRi:
       semStmt c, n
+  of InputS:
+    echo "Input"
+    skip n
+  of OutputS:
+    echo "Output"
+    skip n
+  of ShaderS:
+    echo "Shader"
+    skip n
   of NoStmt: raiseAssert"Holly fuck?"
+  else: raiseAssert"Unsupported"
 
 proc semcheck*(c: var SemContext, n: Cursor) =
   var n = n

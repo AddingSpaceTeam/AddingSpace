@@ -1,6 +1,10 @@
 # Render graph dsl lang
 # It compiles dsl code to actual render graph
 
+Tag model:
+- Edit `src/rgc/doc/tags.md`.
+- Regenerate `src/rgc/tagmodel/tags.nim` and `src/rgc/tagmodel/model_tags.nim` with `nim c -r src/rgc/tagmodel/tools/gen_tags.nim`.
+
 # Architecture:
 1. Frontend
    - Compile macro-based DSL declarations to `RGIR`.
@@ -68,10 +72,10 @@ more abstract and use some interface? Answer: bound it currently, but when it wi
 
 pass caps:
 allowed:
-(in/out SYMDEF), (raster/compute/copy/present ...),
+(in/out SYMDEF), (raster/compute/copy ...),
 not allowed:
 (use SYM), (connect X Y), ()
 
 module caps:
 not allowed:
-(raster/compute/copy/present ...)
+(raster/compute/copy ...)

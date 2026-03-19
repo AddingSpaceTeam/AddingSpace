@@ -8,6 +8,7 @@
 
 import std/[assertions, hashes]
 import bitabs, lineinfos
+import tagmodel/tags
 
 type
   TokenKind* = enum
@@ -38,7 +39,11 @@ type
     strings*: BiTable[StrId, string]
     integers*: BiTable[IntId, int64]
 
-proc createLiterals*(): Literals = Literals()
+proc createLiterals*(): Literals =
+  result = Literals()
+  for tag in succ(low(TagEnum)) .. high(TagEnum):
+    let tagId = result.tags.getOrIncl(TagData[tag][0])
+    assert tagId.int == TagData[tag][1]
 
 proc registerTag*(lit: var Literals; tag: string): TagId =
   lit.tags.getOrIncl(tag)
