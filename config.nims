@@ -9,6 +9,7 @@ import std/os
 --experimental:inferGenericTypes
 --warning:StdPrefix
 --warningAsError:StdPrefix
+--path:"src/gallonim/src"
 
 task build, "build Adding Space (Debug mode)":
   --define:nari.vulkanDebug
