@@ -19,10 +19,11 @@ type
   SemContext*[Vm: static bool] = object
     when Vm:
       dest*: VmTokenBuf
-      types: VmKnownTypes
+      typeRegistry*: VmTypes
     else:
       dest*: RtTokenBuf
-      types: RtKnownTypes
+      typeRegistry*: RtTypes
+    typeTable*: TypeTable
 
     lit*: Literals
 
@@ -50,6 +51,7 @@ type
     currentPhase*: Phase
     toplevelScope: seq[(string, SymId)]
     nodes: Table[SymId, Node]
+    resourceTypes*: Table[SymId, TypeId]
 
 proc passNode(s: SymId): Node = Node(kind: Pass, s: s)
 proc moduleNode(s: SymId): Node = Node(kind: Module, s: s)
@@ -76,11 +78,9 @@ proc takeParRi(c: var SemContext, n: var Cursor) {.inline.} =
     c.dest.addParRi()
   inc n
 
-proc takeSkip(c: var SemContext, n: var Cursor) {.inline.} =
-  if c.currentPhase == SymbolResolution:
-    c.dest.takeTree(n)
-  else:
-    skip n
+# XXX: `==` in sem.nim need because what??, `==` should be type bound,
+# so maybe nimvm doesn't implement type bound ops
+proc `==`*(a, b: TypeId): bool {.borrow.}
 
 proc semStmt*(c: var SemContext, n: var Cursor) =
   case n.stmtKind
@@ -117,17 +117,30 @@ proc semStmt*(c: var SemContext, n: var Cursor) =
       semStmt c, n
     c.takeParRi n
   of InputS:
+    # TODO: refactor of InputS, of OutputS into one case
+    # motivation: same SymbolResolution logic, difference only at
+    # GraphGeneration phase, it should be simple
     c.take n # (input
     case c.currentPhase
     of SymbolResolution:
       let sym = c.lit.syms.getOrIncl(c.lit.strings[n.litId])
       c.dest.add symdefToken(sym)
       inc n
+      let typId = getOrGenType(
+        c.typeTable,
+        c.typeRegistry,
+        n,
+        c.dest)
+      c.dest.takeTree(n) # add type to dest
+                         # XXX: it shouldn't be realy used but in other
+                         # case there are error
+      c.resourceTypes[sym] = typId
+
     of GraphGeneration:
       c.graph.mgetOrPut(c.currentNode, @[]).add resourceNode(n.symId)
       c.nodes[n.symId] = resourceNode(n.symId)
       c.take n
-    c.takeSkip n # type
+      skip n
     c.takeParRi n
   of OutputS:
     c.take n # (output
@@ -136,10 +149,21 @@ proc semStmt*(c: var SemContext, n: var Cursor) =
       let sym = c.lit.syms.getOrIncl(c.lit.strings[n.litId])
       c.dest.add symdefToken(sym)
       inc n
+
+      let typId = getOrGenType(
+        c.typeTable,
+        c.typeRegistry,
+        n,
+        c.dest)
+      c.dest.takeTree(n) # add type to dest
+                         # XXX: it shouldn't be realy used but in other
+                         # case there are error
+      c.resourceTypes[sym] = typId
+
     of GraphGeneration:
       c.graph.mgetOrPut(resourceNode(n.symId), @[]).add c.currentNode
       c.take n
-    c.takeSkip n # type
+      skip n
     c.takeParRi n
   of ShaderS:
     # shader depends on pass
@@ -171,8 +195,10 @@ proc phasex*(c: var SemContext, phase: Phase, input: var TokenBuf): TokenBuf =
   c.currentPhase = phase
   when c.Vm:
     c.dest = createTokenBufVm()
+    c.typeRegistry = initTypesVm()
   else:
     c.dest = createTokenBuf()
+    c.typeRegistry = initTypes()
 
   var cursor = beginRead(input)
   semStmt c, cursor
@@ -230,6 +256,13 @@ proc semcheck*(c: var SemContext, input: var TokenBuf) =
       s.add "\n  <- " & i.repr
     echo s
   
+  echo ""
+  echo "Resource types:"
+  for sym in c.resourceTypes.keys:
+    let tid = c.resourceTypes[sym]
+    echo "  ", c.lit.syms[sym], ": ", c.typeTable.toString(tid),
+         " [TypeId=", tid.uint32, "]"
+
   echo ""
   var sorted = c.topologicalSort()
   echo "Sorted:"
