@@ -9,11 +9,13 @@ type
   EnumList = enum
     RgcStmt
     RgcType
+    RgcExpr
 
 proc toSuffix(e: EnumList): (string, string) =
   case e
   of RgcStmt: ("S", "NoStmt")
   of RgcType: ("T", "NoType")
+  of RgcExpr: ("E", "NoExpr")
 
 proc shortcutToEnumList(shortcut: string): EnumList =
   try:

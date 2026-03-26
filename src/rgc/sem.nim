@@ -52,6 +52,7 @@ type
     toplevelScope: seq[(string, SymId)]
     nodes: Table[SymId, Node]
     resourceTypes*: Table[SymId, TypeId]
+    resourceScopes*: Table[SymId, seq[SymId]]
 
 proc passNode(s: SymId): Node = Node(kind: Pass, s: s)
 proc moduleNode(s: SymId): Node = Node(kind: Module, s: s)
@@ -63,9 +64,29 @@ proc lookupSym(c: SemContext, name: string): SymId =
       return sym
   raiseAssert "Undefined: " & name
 
+proc lookupResource(c: SemContext, owner: SymId, name: string): SymId =
+  for sym in c.resourceScopes.getOrDefault(owner):
+    if cmpIgnoreStyle(c.lit.syms[sym], name) == 0:
+      return sym
+  raiseAssert "Undefined resource: " & name
+
 proc skipParRi*(n: var Cursor) =
   assert n.kind == ParRi
   inc n
+
+proc resolveResourceRef(c: var SemContext, n: var Cursor) =
+  if n.kind == ParLe and n.exprKind == DotE:
+    inc n # (dot
+    let ownerSym = c.lookupSym(c.lit.strings[n.litId])
+    inc n # owner
+    let sym = c.lookupResource(ownerSym, c.lit.strings[n.litId])
+    inc n # resource
+    c.dest.add symToken(sym)
+    skipParRi n
+  else:
+    assert n.kind == Ident
+    c.dest.add symToken(c.lookupResource(c.currentNode.s, c.lit.strings[n.litId]))
+    inc n
 
 proc take(c: var SemContext, n: var Cursor) {.inline.} =
   if c.currentPhase == SymbolResolution:
@@ -124,6 +145,7 @@ proc semStmt*(c: var SemContext, n: var Cursor) =
     case c.currentPhase
     of SymbolResolution:
       let sym = c.lit.syms.getOrIncl(c.lit.strings[n.litId])
+      c.resourceScopes.mgetOrPut(c.currentNode.s, @[]).add(sym)
       c.dest.add symdefToken(sym)
       inc n
       let typId = getOrGenType(
@@ -147,6 +169,7 @@ proc semStmt*(c: var SemContext, n: var Cursor) =
     case c.currentPhase
     of SymbolResolution:
       let sym = c.lit.syms.getOrIncl(c.lit.strings[n.litId])
+      c.resourceScopes.mgetOrPut(c.currentNode.s, @[]).add(sym)
       c.dest.add symdefToken(sym)
       inc n
 
@@ -162,6 +185,7 @@ proc semStmt*(c: var SemContext, n: var Cursor) =
 
     of GraphGeneration:
       c.graph.mgetOrPut(resourceNode(n.symId), @[]).add c.currentNode
+      c.nodes[n.symId] = resourceNode(n.symId)
       c.take n
       skip n
     c.takeParRi n
@@ -187,6 +211,19 @@ proc semStmt*(c: var SemContext, n: var Cursor) =
     of GraphGeneration:
       c.graph.mgetOrPut(c.currentNode, @[]).add c.nodes[n.symId]
       c.take n
+    c.takeParRi n
+  of ConnectS:
+    c.take n # (connect
+    case c.currentPhase
+    of SymbolResolution:
+      c.resolveResourceRef(n)
+      c.resolveResourceRef(n)
+    of GraphGeneration:
+      let srcSym = n.symId
+      c.take n
+      let dstSym = n.symId
+      c.take n
+      c.graph.mgetOrPut(resourceNode(dstSym), @[]).add resourceNode(srcSym)
     c.takeParRi n
   of NoStmt: raiseAssert "Invalid statement"
   else: raiseAssert "Unsupported statement"

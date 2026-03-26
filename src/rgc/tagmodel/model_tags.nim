@@ -29,3 +29,11 @@ type
 proc rawTagIsRgcType*(raw: TagEnum): bool {.inline.} =
   raw >= ImageTagId and raw <= BufferTagId
 
+type
+  RgcExpr* = enum
+    NoExpr
+    DotE = (ord(DotTagId), "dot")  ## owner.resource
+
+proc rawTagIsRgcExpr*(raw: TagEnum): bool {.inline.} =
+  raw >= DotTagId and raw <= DotTagId
+

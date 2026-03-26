@@ -39,6 +39,17 @@ proc parseSignature(b: var Builder, n: NimNode) =
   if Pub in modifiers: b.addIdent "pub"
   else: b.addEmpty()
 
+proc emitResourceRef(b: var Builder, n: NimNode) =
+  case n.kind
+  of nnkIdent:
+    b.addIdent n.strVal
+  of nnkDotExpr:
+    b.withTree "dot":
+      b.addIdent n[0].strVal
+      b.addIdent n[1].strVal
+  else:
+    raiseAssert "Expected identifier or dot expression in connect"
+
 proc parseCommand(b: var IrBuilder, n: NimNode) =
   assert n.kind == nnkCommand
   case n[0].strVal
@@ -66,6 +77,11 @@ proc parseCommand(b: var IrBuilder, n: NimNode) =
     assert b.scopeDepth == 0
     b.dest.withTree "use":
       b.dest.addIdent n[1].strVal
+  of "connect":
+    assert b.scopeDepth == 0
+    b.dest.withTree "connect":
+      b.dest.emitResourceRef n[1]
+      b.dest.emitResourceRef n[2]
   else: raiseAssert "Invalid command"
 
 proc parseStmt(b: var IrBuilder, n: NimNode)
@@ -140,6 +156,8 @@ when isMainModule:
       shader lightingShader
   
   module myModule:
+    output result: Image[RGBA16F]
     use mypass
+    connect mypass.dst, result
 
   initGraph(myModule)

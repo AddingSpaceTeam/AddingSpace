@@ -32,3 +32,13 @@ proc typeKind*(c: PackedToken): RgcType {.inline.} =
 
 proc typeKind*(c: Cursor): RgcType {.inline.} =
   result = typeKind(c.load())
+
+proc exprKind*(c: PackedToken): RgcExpr {.inline.} =
+  let e = tagEnum(c)
+  if c.kind == ParLe and rawTagIsRgcExpr(e):
+    result = cast[RgcExpr](e)
+  else:
+    result = NoExpr
+
+proc exprKind*(c: Cursor): RgcExpr {.inline.} =
+  result = exprKind(c.load())
