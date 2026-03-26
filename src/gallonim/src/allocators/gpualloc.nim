@@ -16,11 +16,13 @@ type
   AllocDesc* = object
     size*: uint64
     alignment*: uint64
-    memoryTypeBits*: uint32 ## VkMemoryRequirements.memoryTypeBits
-                            ## Used by Vulkan backend; other backends ignore (default 0xFFFFFFFF).
+    memoryTypeBits*: uint32 = 0xFFFFFFFF
+    ## VkMemoryRequirements.memoryTypeBits
+    ## Used by Vulkan backend; other backends ignore.
     location*: MemoryLocation
-    linear*: bool           ## true for buffers/linear textures, false for tiled textures.
-                            ## Used by Vulkan; other backends ignore.
+    linear*: bool = true
+    ## true for buffers/linear textures, false for tiled textures.
+    ## Used by Vulkan; other backends ignore.
 
   BackendAllocModel* = concept
     proc allocateDeviceMemory(b: var Self, size: uint64, memTyp: uint32): pointer
