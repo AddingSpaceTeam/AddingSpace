@@ -193,6 +193,23 @@ proc semStmt*(c: var SemContext, n: var Cursor) =
       c.graph.mgetOrPut(resourceNode(n.symId), @[]).add c.currentNode
       c.take n
     c.takeParRi n
+  of ExternalS:
+    c.take n # (external
+    case c.currentPhase
+    of SymbolResolution:
+      let sym = c.lit.syms.getOrIncl(c.lit.strings[n.litId])
+      c.resourceScopes.mgetOrPut(c.currentNode.s, @[]).add(sym)
+      c.dest.add symdefToken(sym)
+      inc n
+      c.take n # index
+      let typId = getOrGenType(c.typeTable, c.typeRegistry, n, c.dest)
+      c.resourceTypes[sym] = typId
+    of GraphGeneration:
+      c.nodes[n.symId] = resourceNode(n.symId)
+      c.take n
+      c.take n # index
+      c.dest.takeTree(n) # type
+    c.takeParRi n
   of UseS:
     c.take n # (use
     case c.currentPhase

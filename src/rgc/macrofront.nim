@@ -1,10 +1,12 @@
 ## Compile dsl to rgir
+{.experimental: "dynamicBindSym".}
 import ir, sem, bitabs
 import tagmodel/model
 import std/[macros, macrocache, tables]
 
 const mcRgirCode = CacheSeq"rgc.rgirCode" # generated rgirCode
 const mcExecute = CacheSeq"rgc.execute" # execute bodies, indexed by int
+const mcExternal = CacheSeq"rgc.external" # external resources
 
 type
   Modifier = enum
@@ -14,6 +16,7 @@ type
   IrBuilder = object
     dest: Builder
     executeIdx: int
+    externalIdx: int
 
 proc parseSignature(b: var Builder, n: NimNode, passType: var string) =
   var modifiers: set[Modifier] = {}
@@ -128,6 +131,15 @@ proc parseCommand(b: var IrBuilder, n: NimNode) =
   of "execute":
     mcExecute.add n[1]
     b.executeIdx = mcExecute.len - 1
+  of "external":
+    b.dest.withTree "external":
+      b.dest.addIdent n[1].strVal
+      b.dest.addIntLit(int64 b.externalIdx)
+      inc b.externalIdx
+      var s = n[2]
+      assert s.kind == nnkStmtList
+      assert s.len == 1
+      b.dest.emitType s[0]
   of "use":
     b.dest.withTree "use":
       b.dest.addIdent n[1].strVal
@@ -142,13 +154,13 @@ proc parseStmt(b: var IrBuilder, n: NimNode) =
   of nnkCommand: parseCommand(b, n)
   else: discard
 
-proc passOrModule*(signature: NimNode, code: NimNode, node: string) =
+proc passOrModule*(signature: NimNode, code: NimNode, node: string, externalBase: int = 0) =
   var b = openBuilder()
   var passType = ""
 
   b.withTree node:
     b.parseSignature(signature, passType)
-    var stmts = IrBuilder(dest: openBuilder(), executeIdx: -1)
+    var stmts = IrBuilder(dest: openBuilder(), executeIdx: -1, externalIdx: externalBase)
 
     stmts.dest.withTree "stmts":
       for i in code:
@@ -157,6 +169,7 @@ proc passOrModule*(signature: NimNode, code: NimNode, node: string) =
     if passType.len == 0: b.addEmpty()
     else: b.addIdent passType
 
+    # XXX: maybe make something like (vmexecuteId INTLIT)
     if stmts.executeIdx >= 0: b.addIntLit(int64 stmts.executeIdx)
     else: b.addEmpty()
 
@@ -188,11 +201,47 @@ proc getExecutesVm*(n: var VmCursor, lit: Literals): Table[SymId, NimNode] =
       skip n
   inc n # )
 
+proc getExternalsVm*(n: var VmCursor, lit: Literals): Table[SymId, NimNode] =
+  result = initTable[SymId, NimNode]()
+  assert n.stmtKind == StmtsS
+  inc n # (stmts
+  while n.kind != ParRi:
+    if n.stmtKind == ModuleS:
+      inc n # (module
+      inc n # :name
+      inc n # dyn
+      inc n # pub
+      inc n # passType
+      inc n # executeIdx
+      assert n.stmtKind == StmtsS
+      inc n # (stmts
+      while n.kind != ParRi:
+        if n.stmtKind == ExternalS:
+          inc n # (external
+          let sym = n.symId
+          inc n # :name
+          let idx = int lit.integers[n.intId]
+          inc n # index
+          skip n # type
+          inc n # )
+          result[sym] = mcExternal[idx]
+        else:
+          skip n
+      inc n # ) stmts
+      inc n # ) module
+    else:
+      skip n
+  inc n # )
+
 macro pass*(signature: untyped, code: untyped) =
   passOrModule(signature, code, "pass")
 
 macro module*(signature: untyped, code: untyped) =
-  passOrModule(signature, code, "module")
+  let externalBase = mcExternal.len
+  for s in code:
+    if s.kind == nnkCommand and s[0].strVal == "external":
+      mcExternal.add bindSym(s[1].strVal)
+  passOrModule(signature, code, "module", externalBase)
 
 macro initGraph*(name: untyped) =
   var lit = createLiterals()
@@ -214,16 +263,28 @@ macro initGraph*(name: untyped) =
   semcheck(sem, buf)
 
   var execCursor = beginRead(sem.dest)
-  let executes = getExecutesVm(execCursor, lit)
+  let executes = getExecutesVm(execCursor, sem.lit)
+  endRead(sem.dest)
+
+  var extCursor = beginRead(sem.dest)
+  let externals = getExternalsVm(extCursor, sem.lit)
   endRead(sem.dest)
 
   echo ""
   echo "Execute map:"
   for sym, body in executes:
-    echo "  ", lit.syms[sym], ": ", body.repr
+    echo "  ", sem.lit.syms[sym], ": ", body.repr
+
+  echo ""
+  echo "External map:"
+  for sym, node in externals:
+    echo "  ", sem.lit.syms[sym], ": ", node.repr
 
 
 when isMainModule:
+  var swapchain: int = 0
+  var depthBuf: int = 0
+
   pass raster pub mypass:
     input src {.sampled.}: Image[RGBA16F, Fullscreen]
     output dst {.colorAttachment(1.0, 0.6, 0.2, 1.0).}: Image[RGBA16F]
@@ -231,6 +292,8 @@ when isMainModule:
       discard
 
   module myModule:
+    external swapchain: Image[RGBA16F]
+    external depthBuf: Image[D32F]
     output result {.colorAttachment.}: Image[RGBA16F]
     use mypass
     connect mypass.dst, result
