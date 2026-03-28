@@ -6,10 +6,17 @@ import pkg/vulkan
 import pkg/chronicles
 import pkg/vmath
 import pkg/gallonim
+import ktx
 
 const maxFramesInFlight {.define: "nari.maxFramesInFlight".} = 2
 
 type
+  Texture = object
+    image: VkImage
+    imageAlloc: Allocation
+    view: VkImageView
+    sampler: VkSampler
+
   # until render graph:
   ShaderData = object
     proj: Mat4
@@ -41,6 +48,7 @@ type
     swapchainImageViews: seq[VkImageView]
     allocator: PassthroughGpuAllocator[VulkanAllocModel] # TODO: implement freelist allocator etc.
 
+    commandPool: VkCommandPool
     commandBuffers: array[maxFramesInFlight, VkCommandBuffer]
 
     # Until render graph integration:
@@ -55,6 +63,12 @@ type
     fences: array[maxFramesInFlight, VkFence]
     presentSemaphores: array[maxFramesInFlight, VkSemaphore]
     renderSemaphores: seq[VkSemaphore]
+
+    textures: seq[Texture]
+    textureDescriptors: seq[VkDescriptorImageInfo]
+    descriptorPool: VkDescriptorPool
+    descriptorSetLayoutTex: VkDescriptorSetLayout
+    descriptorSetTex: VkDescriptorSet
 
 var siwinGlobals = newSiwinGlobals()
 vkPreload() # load vulkan
@@ -79,7 +93,7 @@ proc initGameWindow(nariInstance): window.Window =
   let extsC = exts.mapIt(cstring(it))
 
   var instanceCi = VkInstanceCreateInfo(
-    sType: VkStructureType.InstanceCreateInfo,
+    sType: InstanceCreateInfo,
     pApplicationInfo: appInfo.addr,
     enabledLayerCount:
       when defined(nari.vulkanDebug): validationLayers.len
@@ -524,7 +538,7 @@ proc makeShaderDataBuffers(nariInstance) =
     ) != VkSuccess: quit("Can't bind shader data buffer memory")
 
     var bdaInfo = VkBufferDeviceAddressInfo(
-      sType: VkStructureType.BufferDeviceAddressInfo,
+      sType: BufferDeviceAddressInfo,
       buffer: nariInstance.shaderDataBuffers[i])
     nariInstance.shaderDataAddresses[i] = vkGetBufferDeviceAddress(
       nariInstance.device, bdaInfo.addr)
@@ -533,9 +547,9 @@ proc makeShaderDataBuffers(nariInstance) =
 
 proc createSemaphores(nariInstance) =
   var semaphoreCi = VkSemaphoreCreateInfo(
-    sType: VkStructureType.SemaphoreCreateInfo)
+    sType: SemaphoreCreateInfo)
   var fenceCi = VkFenceCreateInfo(
-    sType: VkStructureType.FenceCreateInfo,
+    sType: FenceCreateInfo,
     flags: VkFenceCreateFlags{SignaledBit})
 
   for i in 0..<maxFramesInFlight:
@@ -558,7 +572,6 @@ proc createSemaphores(nariInstance) =
   info "semaphores and fences created"
 
 proc allocCommandBuffers(nariInstance) =
-  var commandPool = VkCommandPool(0)
   var commandPoolCI = VkCommandPoolCreateInfo(
     sType: CommandPoolCreateInfo,
     flags: VkCommandPoolCreateFlags{ResetCommandBufferBit},
@@ -566,21 +579,293 @@ proc allocCommandBuffers(nariInstance) =
   )
   if vkCreateCommandPool(
     nariInstance.device, commandPoolCI.addr,
-    nil, commandPool.addr
+    nil, nariInstance.commandPool.addr
   ) != VkSuccess: quit("Can't create command pool")
 
   var cbAllocCI = VkCommandBufferAllocateInfo(
     sType: CommandBufferAllocateInfo,
-    commandPool: commandPool,
+    commandPool: nariInstance.commandPool,
     commandBufferCount: maxFramesInFlight
   )
-  var commandBuffers = default(array[maxFramesInFlight, VkCommandBuffer])
   if vkAllocateCommandBuffers(
-    nariInstance.device, cbAllocCI.addr, 
-    commandBuffers[0].addr
+    nariInstance.device, cbAllocCI.addr,
+    nariInstance.commandBuffers[0].addr
   ) != VkSuccess: quit("Can't allocate command buffers")
 
   info "command buffers allocated"
+
+proc loadTextures(nariInstance) =
+  let filename = "assets/uv_checker.ktx"
+
+  var ktxTexture: ptr KtxTexture = nil
+  if ktxTexture_CreateFromNamedFile(
+    filename.cstring, KtxTextureCreateLoadImageDataBit, ktxTexture.addr
+  ) != KtxSuccess: quit("Can't load texture: " & filename)
+
+  var tex = Texture()
+
+  let texFormat = cast[VkFormat](ktxTexture_GetVkFormat(ktxTexture))
+  var texImgCI = VkImageCreateInfo(
+    sType: ImageCreateInfo,
+    imageType: VK_IMAGE_TYPE_2D,
+    format: texFormat,
+    extent: VkExtent3D(width: ktxTexture.baseWidth, height: ktxTexture.baseHeight, depth: 1),
+    mipLevels: ktxTexture.numLevels,
+    arrayLayers: 1,
+    samples: VK_SAMPLE_COUNT_1_BIT,
+    tiling: VK_IMAGE_TILING_OPTIMAL,
+    usage: VkImageUsageFlags(
+      VkImageUsageFlagBits.TransferDstBit.uint32 or
+      VkImageUsageFlagBits.SampledBit.uint32),
+    initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
+  )
+  if vkCreateImage(nariInstance.device, texImgCI.addr, nil, tex.image.addr) != VkSuccess:
+    quit("Can't create texture image")
+
+  var memReq = default(VkMemoryRequirements)
+  vkGetImageMemoryRequirements(nariInstance.device, tex.image, memReq.addr)
+  tex.imageAlloc = nariInstance.allocator.alloc(AllocDesc(
+    size: memReq.size.uint64,
+    alignment: memReq.alignment.uint64,
+    memoryTypeBits: memReq.memoryTypeBits,
+    location: GpuOnly,
+    linear: false,
+  ))
+  if vkBindImageMemory(
+    nariInstance.device, tex.image,
+    cast[VkDeviceMemory](tex.imageAlloc.handle),
+    VkDeviceSize(tex.imageAlloc.offset)
+  ) != VkSuccess: quit("Can't bind texture image memory")
+
+  var texVewCI = VkImageViewCreateInfo(
+    sType: ImageViewCreateInfo,
+    image: tex.image,
+    viewType: VK_IMAGE_VIEW_TYPE_2D,
+    format: texFormat,
+    subresourceRange: VkImageSubresourceRange(
+      aspectMask: VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT),
+      levelCount: ktxTexture.numLevels,
+      layerCount: 1
+    )
+  )
+  if vkCreateImageView(nariInstance.device, texVewCI.addr, nil, tex.view.addr) != VkSuccess:
+    quit("Can't create texture image view")
+
+  var imgSrcBuffer = VkBuffer(0)
+  var imgSrcBufferCI = VkBufferCreateInfo(
+    sType: BufferCreateInfo,
+    size: VkDeviceSize(ktxTexture.dataSize),
+    usage: VkBufferUsageFlags(VkBufferUsageFlagBits.TransferSrcBit)
+  )
+  if vkCreateBuffer(nariInstance.device, imgSrcBufferCI.addr, nil, imgSrcBuffer.addr) != VkSuccess:
+    quit("Can't create staging buffer")
+
+  var stagingMemReq = default(VkMemoryRequirements)
+  vkGetBufferMemoryRequirements(nariInstance.device, imgSrcBuffer, stagingMemReq.addr)
+  var imgSrcAllocation = nariInstance.allocator.alloc(AllocDesc(
+    size: stagingMemReq.size.uint64,
+    alignment: stagingMemReq.alignment.uint64,
+    memoryTypeBits: stagingMemReq.memoryTypeBits,
+    location: CpuToGpu,
+    linear: true,
+  ))
+  if vkBindBufferMemory(
+    nariInstance.device, imgSrcBuffer,
+    cast[VkDeviceMemory](imgSrcAllocation.handle),
+    VkDeviceSize(imgSrcAllocation.offset)
+  ) != VkSuccess: quit("Can't bind staging buffer memory")
+
+  copyMem(imgSrcAllocation.mappedPtr, ktxTexture.pData, ktxTexture.dataSize)
+
+  var fenceOneTimeCI = VkFenceCreateInfo(sType: FenceCreateInfo)
+  var fenceOneTime = VkFence(0)
+  if vkCreateFence(nariInstance.device, fenceOneTimeCI.addr, nil, fenceOneTime.addr) != VkSuccess:
+    quit("Can't create fence")
+
+  var cbOneTimeAI = VkCommandBufferAllocateInfo(
+    sType: CommandBufferAllocateInfo,
+    commandPool: nariInstance.commandPool,
+    commandBufferCount: 1
+  )
+  var cbOneTime = VkCommandBuffer(0)
+  if vkAllocateCommandBuffers(nariInstance.device, cbOneTimeAI.addr, cbOneTime.addr) != VkSuccess:
+    quit("Can't allocate command buffer")
+
+  var cbOneTimeBI = VkCommandBufferBeginInfo(
+    sType: CommandBufferBeginInfo,
+    flags: VkCommandBufferUsageFlags{OneTimeSubmitBit}
+  )
+  if vkBeginCommandBuffer(cbOneTime, cbOneTimeBI.addr) != VkSuccess: quit("Can't begin command buffer")
+
+  var barrierTexImage = VkImageMemoryBarrier2(
+    sType: ImageMemoryBarrier2,
+    srcStageMask: VkPipelineStageFlags2{VkPipelineStageFlagBits2.None},
+    srcAccessMask: VkAccessFlags2{VkAccessFlagBits2.None},
+    dstStageMask: VkPipelineStageFlags2{AllTransferBit},
+    dstAccessMask: VkAccessFlags2{TransferWriteBit},
+    oldLayout: VK_IMAGE_LAYOUT_UNDEFINED,
+    newLayout: VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+    image: tex.image,
+    subresourceRange: VkImageSubresourceRange(
+      aspectMask: VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT),
+      levelCount: ktxTexture.numLevels, layerCount: 1
+    )
+  )
+  var barrierTexInfo = VkDependencyInfo(
+    sType: DependencyInfo,
+    imageMemoryBarrierCount: 1,
+    pImageMemoryBarriers: barrierTexImage.addr
+  )
+  vkCmdPipelineBarrier2(cbOneTime, barrierTexInfo.addr)
+
+  var copyRegions = newSeq[VkBufferImageCopy](ktxTexture.numLevels.int)
+  for j in 0..<ktxTexture.numLevels.int:
+    var mipOffset: csize_t = 0
+    discard ktxTexture2_GetImageOffset(
+      ktxTexture, j.uint32, 0, 0, mipOffset.addr)
+
+    copyRegions[j] = VkBufferImageCopy(
+      bufferOffset: VkDeviceSize(mipOffset),
+      imageSubresource: VkImageSubresourceLayers(
+        aspectMask: VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT),
+        mipLevel: j.uint32,
+        layerCount: 1
+      ),
+      imageExtent: VkExtent3D(
+        width: ktxTexture.baseWidth shr j,
+        height: ktxTexture.baseHeight shr j,
+        depth: 1
+      )
+    )
+
+  vkCmdCopyBufferToImage(
+    cbOneTime, imgSrcBuffer, tex.image,
+    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+    copyRegions.len.uint32, copyRegions[0].addr
+  )
+
+  var barrierTexRead = VkImageMemoryBarrier2(
+    sType: ImageMemoryBarrier2,
+    srcStageMask: VkPipelineStageFlags2{AllTransferBit},
+    srcAccessMask: VkAccessFlags2{TransferWriteBit},
+    dstStageMask: VkPipelineStageFlags2{FragmentShaderBit},
+    dstAccessMask: VkAccessFlags2{ShaderReadBit},
+    oldLayout: VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+    newLayout: ReadOnlyOptimal,
+    image: tex.image,
+    subresourceRange: VkImageSubresourceRange(
+      aspectMask: VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT),
+      levelCount: ktxTexture.numLevels, layerCount: 1
+    )
+  )
+  barrierTexInfo.pImageMemoryBarriers = barrierTexRead.addr
+  vkCmdPipelineBarrier2(cbOneTime, barrierTexInfo.addr)
+
+  if vkEndCommandBuffer(cbOneTime) != VkSuccess:
+    quit("Can't end command buffer")
+
+  var oneTimeSI = VkSubmitInfo(
+    sType: SubmitInfo,
+    commandBufferCount: 1,
+    pCommandBuffers: cbOneTime.addr
+  )
+  if vkQueueSubmit(nariInstance.queue, 1, oneTimeSI.addr, fenceOneTime) != VkSuccess:
+    quit("Can't submit queue")
+  if vkWaitForFences(
+    nariInstance.device, 1, fenceOneTime.addr, VkBool32(1), uint64.high
+  ) != VkSuccess: quit("Waiting for fence failed")
+
+  vkDestroyFence(nariInstance.device, fenceOneTime, nil)
+  vkFreeCommandBuffers(nariInstance.device, nariInstance.commandPool, 1, cbOneTime.addr)
+  vkDestroyBuffer(nariInstance.device, imgSrcBuffer, nil)
+  nariInstance.allocator.free(imgSrcAllocation)
+
+  var samplerCI = VkSamplerCreateInfo(
+    sType: SamplerCreateInfo,
+    magFilter: VK_FILTER_LINEAR,
+    minFilter: VK_FILTER_LINEAR,
+    mipmapMode: VK_SAMPLER_MIPMAP_MODE_LINEAR,
+    anisotropyEnable: VkBool32(1),
+    maxAnisotropy: 8.0,
+    maxLod: float32(ktxTexture.numLevels)
+  )
+  if vkCreateSampler(nariInstance.device, samplerCI.addr, nil, tex.sampler.addr) != VkSuccess:
+    quit("Can't create sampler")
+
+  ktxTexture_Destroy(ktxTexture)
+  nariInstance.textures.add(tex)
+  nariInstance.textureDescriptors.add(VkDescriptorImageInfo(
+    sampler: tex.sampler,
+    imageView: tex.view,
+    imageLayout: ReadOnlyOptimal
+  ))
+
+  var descVariableFlag = VkDescriptorBindingFlags{VariableDescriptorCountBit}
+  var descBindingFlags = VkDescriptorSetLayoutBindingFlagsCreateInfo(
+    sType: DescriptorSetLayoutBindingFlagsCreateInfo,
+    bindingCount: 1,
+    pBindingFlags: descVariableFlag.addr
+  )
+  var descLayoutBindingTex = VkDescriptorSetLayoutBinding(
+    descriptorType: VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+    descriptorCount: uint32(nariInstance.textures.len),
+    stageFlags: VkShaderStageFlags(VK_SHADER_STAGE_FRAGMENT_BIT)
+  )
+  var descLayoutTexCI = VkDescriptorSetLayoutCreateInfo(
+    sType: DescriptorSetLayoutCreateInfo,
+    pNext: descBindingFlags.addr,
+    bindingCount: 1,
+    pBindings: descLayoutBindingTex.addr
+  )
+  if vkCreateDescriptorSetLayout(
+    nariInstance.device, descLayoutTexCI.addr, nil,
+    nariInstance.descriptorSetLayoutTex.addr
+  ) != VkSuccess: quit("Can't create descriptor set layout")
+
+  var poolSize = VkDescriptorPoolSize(
+    `type`: VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+    descriptorCount: uint32(nariInstance.textures.len)
+  )
+  var descPoolCI = VkDescriptorPoolCreateInfo(
+    sType: DescriptorPoolCreateInfo,
+    maxSets: 1,
+    poolSizeCount: 1,
+    pPoolSizes: poolSize.addr
+  )
+  if vkCreateDescriptorPool(
+    nariInstance.device, descPoolCI.addr, nil,
+    nariInstance.descriptorPool.addr
+  ) != VkSuccess: quit("Can't create descriptor pool")
+
+  var variableDescCount = uint32(nariInstance.textures.len)
+  var variableDescCountAI = VkDescriptorSetVariableDescriptorCountAllocateInfo(
+    sType: DescriptorSetVariableDescriptorCountAllocateInfo,
+    descriptorSetCount: 1,
+    pDescriptorCounts: variableDescCount.addr
+  )
+  var texDescSetAlloc = VkDescriptorSetAllocateInfo(
+    sType: DescriptorSetAllocateInfo,
+    pNext: variableDescCountAI.addr,
+    descriptorPool: nariInstance.descriptorPool,
+    descriptorSetCount: 1,
+    pSetLayouts: nariInstance.descriptorSetLayoutTex.addr
+  )
+  if vkAllocateDescriptorSets(
+    nariInstance.device, texDescSetAlloc.addr,
+    nariInstance.descriptorSetTex.addr
+  ) != VkSuccess: quit("Can't allocate descriptor set")
+
+  var writeDescSet = VkWriteDescriptorSet(
+    sType: WriteDescriptorSet,
+    dstSet: nariInstance.descriptorSetTex,
+    dstBinding: 0,
+    descriptorCount: uint32(nariInstance.textureDescriptors.len),
+    descriptorType: VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+    pImageInfo: nariInstance.textureDescriptors[0].addr
+  )
+  vkUpdateDescriptorSets(nariInstance.device, 1, writeDescSet.addr, 0, nil)
+
+  info "textures loaded"
 
 run window, WindowEventsHandler(
   onResize: proc(e: ResizeEvent) =
@@ -590,6 +875,8 @@ run window, WindowEventsHandler(
     nari.makeShaderDataBuffers()
     nari.createSemaphores()
     nari.allocCommandBuffers()
+    if e.initial:
+      nari.loadTextures()
   ,
   onRender: proc(e: RenderEvent) =
     discard,
