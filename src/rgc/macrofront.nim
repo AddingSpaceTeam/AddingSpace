@@ -1,6 +1,6 @@
 ## Compile dsl to rgir
 {.experimental: "dynamicBindSym".}
-import ir, sem, semvm, bitabs
+import ir, sem, semvm, bitabs, vkcodegen
 import tagmodel/model
 import std/[macros, macrocache, tables]
 
@@ -225,6 +225,8 @@ macro initGraph*(name: untyped) =
   echo "External map:"
   for sym, node in externals:
     echo "  ", sem.lit.syms[sym], ": ", node.repr
+
+  result = genCode(sem, executes, externals)
 
 
 when isMainModule:

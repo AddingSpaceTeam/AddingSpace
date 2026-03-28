@@ -1,17 +1,25 @@
 import ir, bitabs, lineinfos, types
 import tagmodel/model
-import std/[tables, deques, strutils]
+import std/[tables, deques, strutils, hashes]
 
 type
-  NodeKind = enum
+  NodeKind* = enum
     Module
     Pass
     Resource
-  
-  Node = object
-    kind: NodeKind
-    s: SymId
-  
+
+  Node* = object
+    kind*: NodeKind
+    s*: SymId
+
+proc `==`*(a, b: Node): bool = a.kind == b.kind and a.s == b.s
+proc hash*(n: Node): Hash =
+  var h: Hash = 0
+  h = h !& hash(n.kind)
+  h = h !& hash(n.s)
+  result = !$h
+
+type
   Phase = enum
     SymbolResolution
     GraphGeneration
@@ -53,6 +61,7 @@ type
     nodes: Table[SymId, Node]
     resourceTypes*: Table[SymId, TypeId]
     resourceScopes*: Table[SymId, seq[SymId]]
+    sorted*: seq[Node]
 
 proc passNode(s: SymId): Node = Node(kind: Pass, s: s)
 proc moduleNode(s: SymId): Node = Node(kind: Module, s: s)
@@ -309,7 +318,7 @@ proc semcheck*(c: var SemContext, input: var TokenBuf) =
          " [TypeId=", tid.uint32, "]"
 
   echo ""
-  var sorted = c.topologicalSort()
+  c.sorted = c.topologicalSort()
   echo "Sorted:"
-  for i in sorted:
+  for i in c.sorted:
     echo i.repr
