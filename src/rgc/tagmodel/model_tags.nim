@@ -16,9 +16,10 @@ type
     ComputeS = (ord(ComputeTagId), "compute")  ## compute pass body
     CopyS = (ord(CopyTagId), "copy")  ## copy pass body
     ShaderS = (ord(ShaderTagId), "shader")  ## shader binding
+    UsageS = (ord(UsageTagId), "usage")  ## usage annotation
 
 proc rawTagIsRgcStmt*(raw: TagEnum): bool {.inline.} =
-  raw >= PassTagId and raw <= ShaderTagId
+  raw >= PassTagId and raw <= UsageTagId
 
 type
   RgcType* = enum
@@ -33,7 +34,8 @@ type
   RgcExpr* = enum
     NoExpr
     DotE = (ord(DotTagId), "dot")  ## owner.resource
+    ColorE = (ord(ColorTagId), "color")  ## RGBA clear color value
 
 proc rawTagIsRgcExpr*(raw: TagEnum): bool {.inline.} =
-  raw >= DotTagId and raw <= DotTagId
+  raw >= DotTagId and raw <= ColorTagId
 

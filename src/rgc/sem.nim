@@ -148,6 +148,8 @@ proc semStmt*(c: var SemContext, n: var Cursor) =
       c.resourceScopes.mgetOrPut(c.currentNode.s, @[]).add(sym)
       c.dest.add symdefToken(sym)
       inc n
+      if n.stmtKind == UsageS: c.dest.takeTree(n) # (usage
+      else: c.take n # .
       let typId = getOrGenType(
         c.typeTable,
         c.typeRegistry,
@@ -162,7 +164,8 @@ proc semStmt*(c: var SemContext, n: var Cursor) =
       c.graph.mgetOrPut(c.currentNode, @[]).add resourceNode(n.symId)
       c.nodes[n.symId] = resourceNode(n.symId)
       c.take n
-      skip n
+      skip n # (usage or .
+      skip n # type
     c.takeParRi n
   of OutputS:
     c.take n # (output
@@ -172,6 +175,8 @@ proc semStmt*(c: var SemContext, n: var Cursor) =
       c.resourceScopes.mgetOrPut(c.currentNode.s, @[]).add(sym)
       c.dest.add symdefToken(sym)
       inc n
+      if n.stmtKind == UsageS: c.dest.takeTree(n) # (usage
+      else: c.take n # .
 
       let typId = getOrGenType(
         c.typeTable,
@@ -187,7 +192,8 @@ proc semStmt*(c: var SemContext, n: var Cursor) =
       c.graph.mgetOrPut(resourceNode(n.symId), @[]).add c.currentNode
       c.nodes[n.symId] = resourceNode(n.symId)
       c.take n
-      skip n
+      skip n # (usage or .
+      skip n # type
     c.takeParRi n
   of ShaderS:
     # shader depends on pass

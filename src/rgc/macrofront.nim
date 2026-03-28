@@ -50,24 +50,72 @@ proc emitResourceRef(b: var Builder, n: NimNode) =
   else:
     raiseAssert "Expected identifier or dot expression in connect"
 
+proc emitNumLit(b: var Builder, n: NimNode) =
+  case n.kind
+  of nnkIntLit: b.addStrLit $n.intVal
+  of nnkFloatLit: b.addStrLit $n.floatVal
+  else: raiseAssert "Expected numeric literal, got: " & $n.kind
+
+proc emitUsage(b: var Builder, pragma: NimNode) =
+  b.withTree "usage":
+    case pragma.kind
+    of nnkIdent:
+      b.addIdent pragma.strVal
+      b.addEmpty()
+    of nnkCall:
+      let name = pragma[0].strVal
+      let argCount = pragma.len - 1
+      b.addIdent name
+      case name
+      of "colorAttachment":
+        if argCount == 4:
+          b.withTree "color":
+            for i in 1 .. 4:
+              b.emitNumLit pragma[i]
+        else:
+          raiseAssert "colorAttachment expects 4 arguments (RGBA), got: " & $argCount
+      of "depthAttachment":
+        if argCount == 1: b.emitNumLit pragma[1]
+        else:
+          raiseAssert "depthAttachment expects 1 argument (depth clear), got: " & $argCount
+      else:
+        raiseAssert "This usage doesn't support call: " & name
+    else:
+      raiseAssert "Unsupported pragma kind: " & $pragma.kind
+
+proc emitType(b: var Builder, n: NimNode) =
+  case n.kind
+  of nnkBracketExpr:
+    b.withTree n[0].strVal:
+      for i in 1 ..< n.len:
+        b.addIdent n[i].strVal
+  of nnkIdent:
+    b.addIdent n.strVal
+  else: raiseAssert "Unsupported type expression kind: " & $n.kind
+
 proc parseCommand(b: var IrBuilder, n: NimNode) =
   assert n.kind == nnkCommand
   case n[0].strVal
   of "input", "output":
     assert b.scopeDepth == 0
     b.dest.withTree n[0].strVal:
-      b.dest.addIdent n[1].strVal
+      var nameNode = n[1]
+      if nameNode.kind == nnkPragmaExpr:
+        # parse usage
+        b.dest.addIdent nameNode[0].strVal
+        let pragma = nameNode[1]
+        assert pragma.kind == nnkPragma and
+               pragma.len == 1,
+               "Expected exactly one usage pragma"
+        b.dest.emitUsage pragma[0]
+      else:
+        b.dest.addIdent nameNode.strVal
+        b.dest.addEmpty() # no usage
+
       var s = n[2]
       assert s.kind == nnkStmtList
       assert s.len == 1
-
-      case s[0].kind
-      of nnkBracketExpr:
-        b.dest.withTree s[0][0].strVal:
-          b.dest.addIdent s[0][1].strVal # TODO: in fact it can be some tree...
-      of nnkIdent:
-        b.dest.addIdent s[0].strVal
-      else: raiseAssert "Unsupported node kind in input/output command"
+      b.dest.emitType s[0]
   of "shader":
     assert b.scopeDepth > 0
     b.dest.withTree "shader":
@@ -149,14 +197,14 @@ macro initGraph*(name: untyped) =
 
 when isMainModule:
   pass pub mypass:
-    input  src: Image[RGBA16F]
-    output dst: Image[RGBA16F]
+    input src {.sampled.}: Image[RGBA16F]
+    output dst {.colorAttachment(1.0, 0.6, 0.2, 1.0).}: Image[RGBA16F]
 
     raster:
       shader lightingShader
-  
+
   module myModule:
-    output result: Image[RGBA16F]
+    output result {.colorAttachment.}: Image[RGBA16F]
     use mypass
     connect mypass.dst, result
 

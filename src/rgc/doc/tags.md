@@ -11,6 +11,8 @@
 | `(compute S*)` | RgcStmt | compute pass body |
 | `(copy S*)` | RgcStmt | copy pass body |
 | `(shader I Y)` | RgcStmt | shader binding |
+| `(usage I A)` | RgcStmt | usage annotation |
 | `(image T)` | RgcType | image resource, T is generic param, actually mostly hides imageViews, maybe it also need separated type |
 | `(buffer T)` | RgcType | buffer resource of T |
 | `(dot I I)` | RgcExpr | owner.resource |
+| `(color A A A A)` | RgcExpr | RGBA clear color value |
