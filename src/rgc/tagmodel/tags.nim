@@ -10,6 +10,7 @@ type
     OutputTagId
     UseTagId
     ConnectTagId
+    ExternalTagId
     RasterTagId
     ComputeTagId
     CopyTagId
@@ -30,13 +31,14 @@ const
     ("output", 5),
     ("use", 6),
     ("connect", 7),
-    ("raster", 8),
-    ("compute", 9),
-    ("copy", 10),
-    ("shader", 11),
-    ("usage", 12),
-    ("image", 13),
-    ("buffer", 14),
-    ("dot", 15),
-    ("color", 16)
+    ("external", 8),
+    ("raster", 9),
+    ("compute", 10),
+    ("copy", 11),
+    ("shader", 12),
+    ("usage", 13),
+    ("image", 14),
+    ("buffer", 15),
+    ("dot", 16),
+    ("color", 17)
   ]

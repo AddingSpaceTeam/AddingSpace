@@ -67,26 +67,19 @@ proc toString*(t: TypeTable; tid: TypeId): string =
   if tid == NoTypeId: "<no type>"
   else: t.names[tid.int - 1]
 
-# XXX: maybe better make it a proc bound to SemContext?
 proc getOrGenType*(
   typeTable: var TypeTable,
   typeRegistry: var Types,
-  typ: Cursor, buf: var TokenBuf): TypeId =
-  result = typeTable.intern(buf, buf.len)
+  n: var Cursor, buf: var TokenBuf): TypeId =
+  let start = buf.len
+  buf.takeTree(n)
+  result = typeTable.intern(buf, start)
   if result in typeRegistry.decls: return
 
-  let regTypeStart = typeRegistry.mem.len
-  typeRegistry.mem.addSubtree typ
-  typeRegistry.decls[result] = typeRegistry.mem.cursorAt(regTypeStart)
-  # buf.takeTree(n) # add type to dest
-  #                 # XXX: it shouldn't be realy need but in other
-  #                 # case there are error
-  # c.resourceTypes[sym] = typId
-  endRead(typeRegistry.mem) # TODO: check that it works for RtCursor/RtTokenBuf
-                            # maybe it's a good scenario
-  # in fact we can't just mutate and then freeze bacause we don't know types
-  # until it completed, maybe we need can add pass for it like:
-  # 1. collect typeRegistry.mem
-  # 2. create cursors
-  # 3. use it
+  let regStart = typeRegistry.mem.len
+  let typCursor = buf.cursorAt(start)
+  typeRegistry.mem.addSubtree(typCursor)
+  endRead(buf)
+  typeRegistry.decls[result] = typeRegistry.mem.cursorAt(regStart)
+  endRead(typeRegistry.mem)
 

@@ -7,6 +7,7 @@
 | `(output D T)` | RgcStmt | pass output declaration |
 | `(use Y .Y)` | RgcStmt | module usage declaration |
 | `(connect X X)` | RgcStmt | resource connection |
+| `(external D T)` | RgcStmt | external resource declaration |
 | `(raster S*)` | RgcStmt | raster pass body |
 | `(compute S*)` | RgcStmt | compute pass body |
 | `(copy S*)` | RgcStmt | copy pass body |
