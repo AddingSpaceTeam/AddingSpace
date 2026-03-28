@@ -89,14 +89,12 @@ proc resolveResourceRef(c: var SemContext, n: var Cursor) =
     inc n
 
 proc take(c: var SemContext, n: var Cursor) {.inline.} =
-  if c.currentPhase == SymbolResolution:
-    c.dest.add n.load
+  c.dest.add n.load
   inc n
 
 proc takeParRi(c: var SemContext, n: var Cursor) {.inline.} =
   assert n.kind == ParRi
-  if c.currentPhase == SymbolResolution:
-    c.dest.addParRi()
+  c.dest.addParRi()
   inc n
 
 # XXX: `==` in sem.nim need because what??, `==` should be type bound,
@@ -118,6 +116,7 @@ proc semStmt*(c: var SemContext, n: var Cursor) =
       c.exported[c.currentNode.s] = FileId(0) # dummy file currently. TODO: implement
     c.take n # pub
     c.take n # passKind
+    c.take n # executeIdx
     semStmt c, n
     c.takeParRi n
   of ModuleS:
@@ -130,6 +129,7 @@ proc semStmt*(c: var SemContext, n: var Cursor) =
     c.take n # dyn
     c.take n # pub
     c.take n # passType
+    c.take n # executeIdx
     semStmt c, n
     c.takeParRi n
   of StmtsS:
@@ -157,8 +157,8 @@ proc semStmt*(c: var SemContext, n: var Cursor) =
       c.graph.mgetOrPut(c.currentNode, @[]).add resourceNode(n.symId)
       c.nodes[n.symId] = resourceNode(n.symId)
       c.take n
-      skip n # (usage or .
-      skip n # type
+      c.dest.takeTree(n) # (usage or .
+      c.dest.takeTree(n) # type
     c.takeParRi n
   of OutputS:
     c.take n # (output
@@ -177,8 +177,8 @@ proc semStmt*(c: var SemContext, n: var Cursor) =
       c.graph.mgetOrPut(resourceNode(n.symId), @[]).add c.currentNode
       c.nodes[n.symId] = resourceNode(n.symId)
       c.take n
-      skip n # (usage or .
-      skip n # type
+      c.dest.takeTree(n) # (usage or .
+      c.dest.takeTree(n) # type
     c.takeParRi n
   of ShaderS:
     # shader depends on pass

@@ -1,8 +1,10 @@
 ## Compile dsl to rgir
 import ir, sem, bitabs
-import std/[macros, macrocache]
+import tagmodel/model
+import std/[macros, macrocache, tables]
 
 const mcRgirCode = CacheSeq"rgc.rgirCode" # generated rgirCode
+const mcExecute = CacheSeq"rgc.execute" # execute bodies, indexed by int
 
 type
   Modifier = enum
@@ -11,6 +13,7 @@ type
 
   IrBuilder = object
     dest: Builder
+    executeIdx: int
 
 proc parseSignature(b: var Builder, n: NimNode, passType: var string) =
   var modifiers: set[Modifier] = {}
@@ -123,7 +126,8 @@ proc parseCommand(b: var IrBuilder, n: NimNode) =
       assert s.len == 1
       b.dest.emitType s[0]
   of "execute":
-    discard # not implemented
+    mcExecute.add n[1]
+    b.executeIdx = mcExecute.len - 1
   of "use":
     b.dest.withTree "use":
       b.dest.addIdent n[1].strVal
@@ -144,7 +148,7 @@ proc passOrModule*(signature: NimNode, code: NimNode, node: string) =
 
   b.withTree node:
     b.parseSignature(signature, passType)
-    var stmts = IrBuilder(dest: openBuilder())
+    var stmts = IrBuilder(dest: openBuilder(), executeIdx: -1)
 
     stmts.dest.withTree "stmts":
       for i in code:
@@ -152,9 +156,37 @@ proc passOrModule*(signature: NimNode, code: NimNode, node: string) =
 
     if passType.len == 0: b.addEmpty()
     else: b.addIdent passType
+
+    if stmts.executeIdx >= 0: b.addIntLit(int64 stmts.executeIdx)
+    else: b.addEmpty()
+
     b.addBuilder(stmts.dest)
 
   mcRgirCode.add newStrLitNode(b.extract())
+
+proc getExecuteBody*(idx: int): NimNode = mcExecute[idx]
+proc getExecutesVm*(n: var VmCursor, lit: Literals): Table[SymId, NimNode] =
+  result = initTable[SymId, NimNode]()
+  assert n.stmtKind == StmtsS
+  inc n # (stmts
+  while n.kind != ParRi:
+    if n.stmtKind == PassS:
+      inc n # (pass
+      let sym = n.symId
+      inc n # :name
+      inc n # dyn
+      inc n # pub
+      inc n # passKind
+      if n.kind == IntLit:
+        result[sym] = mcExecute[int lit.integers[n.intId]]
+        inc n
+      else:
+        inc n # . (no execute)
+      skip n # (stmts ...)
+      inc n # )
+    else:
+      skip n
+  inc n # )
 
 macro pass*(signature: untyped, code: untyped) =
   passOrModule(signature, code, "pass")
@@ -180,6 +212,15 @@ macro initGraph*(name: untyped) =
 
   var sem = SemContext[true](lit: lit)
   semcheck(sem, buf)
+
+  var execCursor = beginRead(sem.dest)
+  let executes = getExecutesVm(execCursor, lit)
+  endRead(sem.dest)
+
+  echo ""
+  echo "Execute map:"
+  for sym, body in executes:
+    echo "  ", lit.syms[sym], ": ", body.repr
 
 
 when isMainModule:
