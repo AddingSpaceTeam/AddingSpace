@@ -557,6 +557,31 @@ proc createSemaphores(nariInstance) =
 
   info "semaphores and fences created"
 
+proc allocCommandBuffers(nariInstance) =
+  var commandPool = VkCommandPool(0)
+  var commandPoolCI = VkCommandPoolCreateInfo(
+    sType: CommandPoolCreateInfo,
+    flags: VkCommandPoolCreateFlags{ResetCommandBufferBit},
+    queueFamilyIndex: nariInstance.familyIndices.graphicsFamily
+  )
+  if vkCreateCommandPool(
+    nariInstance.device, commandPoolCI.addr,
+    nil, commandPool.addr
+  ) != VkSuccess: quit("Can't create command pool")
+
+  var cbAllocCI = VkCommandBufferAllocateInfo(
+    sType: CommandBufferAllocateInfo,
+    commandPool: commandPool,
+    commandBufferCount: maxFramesInFlight
+  )
+  var commandBuffers = default(array[maxFramesInFlight, VkCommandBuffer])
+  if vkAllocateCommandBuffers(
+    nariInstance.device, cbAllocCI.addr, 
+    commandBuffers[0].addr
+  ) != VkSuccess: quit("Can't allocate command buffers")
+
+  info "command buffers allocated"
+
 run window, WindowEventsHandler(
   onResize: proc(e: ResizeEvent) =
     nari.createSwapchain(e.size.x, e.size.y)
@@ -564,6 +589,7 @@ run window, WindowEventsHandler(
     nari.makeBuffers()
     nari.makeShaderDataBuffers()
     nari.createSemaphores()
+    nari.allocCommandBuffers()
   ,
   onRender: proc(e: RenderEvent) =
     discard,
