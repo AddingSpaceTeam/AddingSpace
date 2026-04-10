@@ -1,12 +1,14 @@
 ## The module that launches the game
 
-import std/[math, sequtils, sets, times]
+import std/[math, sequtils, sets, strutils, times]
 import pkg/siwin
 import pkg/vulkan
 import pkg/chronicles
 import pkg/vmath
 import pkg/gallonim
 import ktx
+import rgc/macrofront
+import rgc/vkcodegen
 
 const maxFramesInFlight {.define: "nari.maxFramesInFlight".} = 2
 
@@ -37,6 +39,7 @@ type
     vkInstance: VkInstance
     devices: seq[VkPhysicalDevice] # TODO: rename to pDevices
     deviceId: int # TODO: implement selection
+    msaaCaps: RgcMsaaCapabilities
     familyIndices: QueueFamilyIndices
     families: QueueFamilies
 
@@ -46,15 +49,14 @@ type
     swapchain: VkSwapchainKHR
     swapchainImages: seq[VkImage]
     swapchainImageViews: seq[VkImageView]
+    swapchainExternalImages: seq[RgcExternalImage]
     allocator: PassthroughGpuAllocator[VulkanAllocModel] # TODO: implement freelist allocator etc.
 
     commandPool: VkCommandPool
     commandBuffers: array[maxFramesInFlight, VkCommandBuffer]
 
-    # Until render graph integration:
-    depthImage: VkImage
-    depthImageView: VkImageView
     vertexBuffer: VkBuffer
+    vertexBufferAlloc: Allocation
     shaderDataBuffers: array[maxFramesInFlight, VkBuffer]
     shaderDataAllocs: array[maxFramesInFlight, Allocation]
     shaderDataAddresses: array[maxFramesInFlight, VkDeviceAddress]
@@ -201,6 +203,55 @@ proc findQueueFamilyIndices(nariInstance) =
   if presentSupport.ord != 1:
     quit("No presentation support found(")
 
+proc supportsDeviceExtension(physicalDevice: VkPhysicalDevice, name: string): bool =
+  var count = 0'u32
+  if vkEnumerateDeviceExtensionProperties(
+    physicalDevice, nil, count.addr, nil) != VKSuccess or count == 0:
+    return false
+
+  var props = newSeq[VkExtensionProperties](count.int)
+  if vkEnumerateDeviceExtensionProperties(
+    physicalDevice, nil, count.addr, props[0].addr) != VKSuccess:
+    return false
+
+  for prop in props:
+    if $cast[cstring](prop.extensionName[0].addr) == name:
+      return true
+
+proc queryMsaaCapabilities(nariInstance) =
+  let physicalDevice = nariInstance.devices[nariInstance.deviceId]
+  var deviceProperties = VkPhysicalDeviceProperties2(
+    sType: PhysicalDeviceProperties2)
+  vkGetPhysicalDeviceProperties2(physicalDevice, deviceProperties.addr)
+
+  var
+    rtssFeatures = VkPhysicalDeviceMultisampledRenderToSingleSampledFeaturesEXT(
+      sType: PhysicalDeviceMultisampledRenderToSingleSampledFeaturesEXT)
+    features2 = VkPhysicalDeviceFeatures2(
+      sType: PhysicalDeviceFeatures2,
+      pNext: rtssFeatures.addr)
+
+  vkGetPhysicalDeviceFeatures2(physicalDevice, features2.addr)
+
+  let
+    hasRtssFeature =
+      bool(rtssFeatures.multisampledRenderToSingleSampled)
+    hasRtssExt =
+      physicalDevice.supportsDeviceExtension(
+        VkExtMultisampledRenderToSingleSampledExtensionName)
+
+  nariInstance.msaaCaps = RgcMsaaCapabilities(
+    supportsRtssExt: hasRtssFeature and hasRtssExt,
+    colorSampleCounts: deviceProperties.properties.limits.framebufferColorSampleCounts,
+    depthSampleCounts: deviceProperties.properties.limits.framebufferDepthSampleCounts)
+
+  info "MSAA capabilities",
+    rtssFeature = hasRtssFeature,
+    rtssExtension = hasRtssExt,
+    rtss = nariInstance.msaaCaps.supportsRtssExt,
+    colorSamples = uint32(nariInstance.msaaCaps.colorSampleCounts),
+    depthSamples = uint32(nariInstance.msaaCaps.depthSampleCounts)
+
 proc peekDevice(nariInstance) =
   let qfpriorities = 1.0f
   var queueCi = VkDeviceQueueCreateInfo(
@@ -209,11 +260,16 @@ proc peekDevice(nariInstance) =
     queueCount: 1,
     pQueuePriorities: qfpriorities.addr)
   
-  const deviceExtensions = [cstring"VK_KHR_swapchain"]
+  nariInstance.queryMsaaCapabilities()
+
+  var deviceExtensions = @[cstring"VK_KHR_swapchain"]
+  if nariInstance.msaaCaps.supportsRtssExt:
+    deviceExtensions.add cstring(VkExtMultisampledRenderToSingleSampledExtensionName)
   
   var enabledVk10Features = VkPhysicalDeviceFeatures(
     shaderInt64: VkBool32(1),
-    samplerAnisotropy: VkBool32(1))
+    samplerAnisotropy: VkBool32(1),
+    sampleRateShading: VkBool32(1)) # need for good msaa quality
   
   var enabledVk12Features = VkPhysicalDeviceVulkan12Features(
     sType: PhysicalDeviceVulkan12Features,
@@ -233,10 +289,19 @@ proc peekDevice(nariInstance) =
     sType: PhysicalDeviceVulkan14Features,
     pNext: enabledVk13Features.addr,
     maintenance5: VkBool32(1))
+
+  var enabledRtssFeatures = VkPhysicalDeviceMultisampledRenderToSingleSampledFeaturesEXT(
+    sType: PhysicalDeviceMultisampledRenderToSingleSampledFeaturesEXT,
+    pNext: enabledVk14Features.addr,
+    multisampledRenderToSingleSampled:
+      if nariInstance.msaaCaps.supportsRtssExt: VkBool32(1)
+      else: VkBool32(0))
   
   var deviceCI = VkDeviceCreateInfo(
     sType: DeviceCreateInfo,
-    pNext: enabledVk14Features.addr,
+    pNext:
+      if nariInstance.msaaCaps.supportsRtssExt: cast[pointer](enabledRtssFeatures.addr)
+      else: cast[pointer](enabledVk14Features.addr),
     queueCreateInfoCount: 1,
     pQueueCreateInfos: queueCi.addr,
     enabledExtensionCount: deviceExtensions.len.uint32,
@@ -264,7 +329,9 @@ proc createSwapchain(nariInstance; w, h: int) =
 
   for imageView in nariInstance.swapchainImageViews:
     vkDestroyImageView(nariInstance.device, imageView, nil)
+
   nariInstance.swapchainImageViews.shrink(0)
+  nariInstance.swapchainExternalImages.shrink(0)
 
   let imageFormat = VK_FORMAT_B8G8R8A8_SRGB
   var swapchainCi = VkSwapchainCreateInfoKHR(
@@ -304,6 +371,7 @@ proc createSwapchain(nariInstance; w, h: int) =
     nariInstance.swapchainImages[0].addr
   ) != VKSuccess: quit("Can't get swapchain images")
   nariInstance.swapchainImageViews = newSeq[VkImageView](imageCount.int)
+  nariInstance.swapchainExternalImages = newSeq[RgcExternalImage](imageCount.int)
 
   for i in 0 ..< imageCount.int:
     var imageViewCi = VkImageViewCreateInfo(
@@ -324,6 +392,11 @@ proc createSwapchain(nariInstance; w, h: int) =
       nil,
       nariInstance.swapchainImageViews[i].addr
     ) != VKSuccess: quit("Can't create swapchain image view")
+
+    nariInstance.swapchainExternalImages[i] = RgcExternalImage(
+      image: nariInstance.swapchainImages[i],
+      view: nariInstance.swapchainImageViews[i],
+      layout: Undefined)
 
   if swapchainCi.oldSwapchain != VkSwapchainKHR(0):
     vkDestroySwapchainKHR(nariInstance.device, swapchainCi.oldSwapchain, nil)
@@ -361,71 +434,6 @@ proc findDepthFormat(): VkFormat =
       VkFormatFeatureFlagBits.DepthStencilAttachmentBit.uint32) > 0'u32: return i
     # TODO: maybe there better way that work with sets like
     # cast[set[VkFormatFeatureFlagBits]](optimalTilingFeatures)
-
-proc configureDepth(nariInstance; w, h: int) =
-  # depth testing required for 3d games
-
-  # This is basicly should be generated by render graph compiler.
-  # I.e use depth resource => create this but I don't know how to formalize it
-  # and is this realy correct
-  let depthFormat = findDepthFormat()
-  var depthImageCi = VkImageCreateInfo(
-    sType: ImageCreateInfo,
-    imageType: VK_IMAGE_TYPE_2D,
-    format: depthFormat,
-    extent: VkExtent3D(
-      width: w.uint32,
-      height: h.uint32,
-      depth: 1),
-    mipLevels: 1,
-    arrayLayers: 1,
-    samples: VK_SAMPLE_COUNT_1_BIT,
-    tiling: VK_IMAGE_TILING_OPTIMAL,
-    usage: VkImageUsageFlags(VkImageUsageFlagBits.DepthStencilAttachmentBit),
-    initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
-  )
-
-  
-  if vkCreateImage(
-    nariInstance.device,
-    depthImageCi.addr, nil,
-    nariInstance.depthImage.addr
-  ) != VkSuccess: quit("Can't create image")
-
-  var memReq = default(VkMemoryRequirements)
-  vkGetImageMemoryRequirements(nariInstance.device, nariInstance.depthImage, memReq.addr)
-
-
-  var alloc = nariInstance.allocator.alloc(AllocDesc(
-    size: memReq.size.uint64,
-    alignment: memReq.alignment.uint64,
-    memoryTypeBits: memReq.memoryTypeBits,
-    location: GpuOnly,
-    linear: true,
-  ))
-
-  if vkBindImageMemory(
-    nariInstance.device, nariInstance.depthImage,
-    cast[VkDeviceMemory](alloc.handle),
-    VkDeviceSize(alloc.offset)) != VkSuccess: quit("Can't bind image memory")
-
-  var depthViewCI = VkImageViewCreateInfo(
-    sType: ImageViewCreateInfo,
-    image: nariInstance.depthImage,
-    viewType: VK_IMAGE_VIEW_TYPE_2D,
-    format: depthFormat,
-    subresourceRange: VkImageSubresourceRange(
-      aspectMask: VkImageAspectFlags(VK_IMAGE_ASPECT_DEPTH_BIT),
-      levelCount: 1, layerCount: 1
-    )
-  )
-
-  if vkCreateImageView(
-    nariInstance.device,
-    depthViewCI.addr, nil,
-    nariInstance.depthImageView.addr) != VkSuccess: quit("Can't create depth image view")
-  
-  info "Depth attachment created"
 
 # 3D rendering:
 
@@ -478,7 +486,7 @@ proc makeBuffers(nariInstance) =
     memReq.addr
   )
 
-  var alloc = nariInstance.allocator.alloc(AllocDesc(
+  nariInstance.vertexBufferAlloc = nariInstance.allocator.alloc(AllocDesc(
     size: memReq.size.uint64,
     alignment: memReq.alignment.uint64,
     memoryTypeBits: memReq.memoryTypeBits,
@@ -489,12 +497,12 @@ proc makeBuffers(nariInstance) =
   if vkBindBufferMemory(
     nariInstance.device,
     nariInstance.vertexBuffer,
-    cast[VkDeviceMemory](alloc.handle),
-    VkDeviceSize(alloc.offset)
+    cast[VkDeviceMemory](nariInstance.vertexBufferAlloc.handle),
+    VkDeviceSize(nariInstance.vertexBufferAlloc.offset)
   ) != VkSuccess: quit("Can't bind vertex/index buffer memory")
 
-  let indicesStart = cast[pointer](cast[uint](alloc.mappedPtr) + uint(vBufSize))
-  copyMem(alloc.mappedPtr, vertices[0].addr, vBufSize)
+  let indicesStart = cast[pointer](cast[uint](nariInstance.vertexBufferAlloc.mappedPtr) + uint(vBufSize))
+  copyMem(nariInstance.vertexBufferAlloc.mappedPtr, vertices[0].addr, vBufSize)
   copyMem(indicesStart, indices[0].addr, iBufSize)
 
   info "Vertex/index buffer created"
@@ -866,7 +874,27 @@ proc loadTextures(nariInstance) =
 
   info "Textures loaded"
 
+
 proc createPipeline(nariInstance) =
+  let plan = rgcSelectPassMsaaPlan(
+    nariInstance.msaaCaps,
+    [RgcAttachmentMsaaRequest(
+      kind: racColor,
+      requestedSamples: 4,
+      policy: spFlexible,
+      enableMsaaImgAccess: false,
+      external: true),
+    RgcAttachmentMsaaRequest(
+      kind: racDepth,
+      requestedSamples: 4,
+      policy: spFlexible,
+      enableMsaaImgAccess: false,
+      external: false)])
+
+  info "MSAA plan selected", backend = $plan.backend,
+    rasterSamples = sampleCountInt(plan.rasterizationSamples),
+    attachmentSamples = plan.attachmentSamples.mapIt($sampleCountInt(it)).join(", ")
+
   let vertSpirv = readFile("src/shaders/shader.vert.spv")
   let fragSpirv = readFile("src/shaders/shader.frag.spv")
 
@@ -974,7 +1002,9 @@ proc createPipeline(nariInstance) =
   )
   var multisampleState = VkPipelineMultisampleStateCreateInfo(
     sType: PipelineMultisampleStateCreateInfo,
-    rasterizationSamples: VK_SAMPLE_COUNT_1_BIT
+    rasterizationSamples: plan.rasterizationSamples,
+    sampleShadingEnable: VkBool32(1),
+    minSampleShading: 1.0
   )
 
   var pipelineCI = VkGraphicsPipelineCreateInfo(
@@ -997,12 +1027,41 @@ proc createPipeline(nariInstance) =
     nariInstance.pipeline.addr
   ) != VkSuccess: quit("Can't create graphics pipeline")
 
-  info "Graphics pipeline created"
+  info "Graphics pipeline created",
+    backend = $plan.backend,
+    rasterizationSamples = sampleCountInt(plan.rasterizationSamples)
 
 var lastWindowSize = ivec2(0, 0)
 var camDist = -8.0'f32
 var camRotation = vec2(0.0'f32, 0.0'f32)
 var keysDown = initHashSet[Key]()
+
+pass raster pub mainScenePass:
+  output color {.colorAttachment(0.02, 0.025, 0.04, 1.0), resolveAttachment(avg), samples(4).}: Image[B8G8R8A8_SRGB, FullScreen]
+  output depth {.depthAttachment, resolveAttachment(sample0), samples(4).}: Image[D32FS8, FullScreen]
+  execute proc(cb: VkCommandBuffer) =
+    var vp = VkViewport(
+      y: float32(h), width: float32(w), height: -float32(h),
+      minDepth: 0.0, maxDepth: 1.0)
+    vkCmdSetViewport(cb, 0, 1, vp.addr)
+    var scissor = VkRect2D(extent: VkExtent2D(width: w.uint32, height: h.uint32))
+    vkCmdSetScissor(cb, 0, 1, scissor.addr)
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, nariInstance.pipeline)
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, nariInstance.pipelineLayout,
+      0, 1, nariInstance.descriptorSetTex.addr, 0, nil)
+    var vOffset = VkDeviceSize(0)
+    vkCmdBindVertexBuffers(cb, 0, 1, nariInstance.vertexBuffer.addr, vOffset.addr)
+    vkCmdBindIndexBuffer(cb, nariInstance.vertexBuffer, nariInstance.vertexBufferSize, VK_INDEX_TYPE_UINT16)
+    vkCmdPushConstants(cb, nariInstance.pipelineLayout,
+      VkShaderStageFlags(VK_SHADER_STAGE_VERTEX_BIT), 0,
+      uint32(sizeof(VkDeviceAddress)), nariInstance.shaderDataAddresses[fi].addr)
+    vkCmdDrawIndexed(cb, nariInstance.indexCount, 3, 0, 0, 0)
+
+module mainSceneGraph:
+  external swapchain: Image[B8G8R8A8_SRGB, FullScreen]
+  use mainScenePass
+  connect mainScenePass.color, swapchain
+  present swapchain
 
 proc renderFrame(nariInstance; w, h: int) =
   let fi = nariInstance.frameIndex
@@ -1044,106 +1103,18 @@ proc renderFrame(nariInstance; w, h: int) =
   if vkBeginCommandBuffer(cb, cbBI.addr) != VkSuccess:
     quit("Can't begin command buffer")
 
-  var outputBarriers = [
-    VkImageMemoryBarrier2(
-      sType: ImageMemoryBarrier2,
-      srcStageMask: VkPipelineStageFlags2{ColorAttachmentOutputBit},
-      srcAccessMask: VkAccessFlags2{VkAccessFlagBits2.None},
-      dstStageMask: VkPipelineStageFlags2{ColorAttachmentOutputBit},
-      dstAccessMask: VkAccessFlags2{ColorAttachmentReadBit, ColorAttachmentWriteBit},
-      oldLayout: VK_IMAGE_LAYOUT_UNDEFINED,
-      newLayout: AttachmentOptimal,
-      image: nariInstance.swapchainImages[imageIndex],
-      subresourceRange: VkImageSubresourceRange(
-        aspectMask: VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT),
-        levelCount: 1, layerCount: 1)
-    ),
-    VkImageMemoryBarrier2(
-      sType: ImageMemoryBarrier2,
-      srcStageMask: VkPipelineStageFlags2{LateFragmentTestsBit},
-      srcAccessMask: VkAccessFlags2{DepthStencilAttachmentWriteBit},
-      dstStageMask: VkPipelineStageFlags2{EarlyFragmentTestsBit},
-      dstAccessMask: VkAccessFlags2{DepthStencilAttachmentWriteBit},
-      oldLayout: VK_IMAGE_LAYOUT_UNDEFINED,
-      newLayout: AttachmentOptimal,
-      image: nariInstance.depthImage,
-      subresourceRange: VkImageSubresourceRange(
-        aspectMask: VkImageAspectFlags(
-          VK_IMAGE_ASPECT_DEPTH_BIT.uint32 or VK_IMAGE_ASPECT_STENCIL_BIT.uint32),
-        levelCount: 1, layerCount: 1)
-    )
-  ]
-  var barrierDependencyInfo = VkDependencyInfo(
-    sType: DependencyInfo,
-    imageMemoryBarrierCount: uint32(outputBarriers.len),
-    pImageMemoryBarriers: outputBarriers[0].addr)
-  vkCmdPipelineBarrier2(cb, barrierDependencyInfo.addr)
+  template swapchain: untyped = nariInstance.swapchainExternalImages[imageIndex.int]
 
-  var colorAttachmentInfo = VkRenderingAttachmentInfo(
-    sType: RenderingAttachmentInfo,
-    imageView: nariInstance.swapchainImageViews[imageIndex],
-    imageLayout: AttachmentOptimal,
-    loadOp: Clear,
-    storeOp: Store,
-    clearValue: VkClearValue(color: VkClearColorValue(float32: [1.0'f32, 0.6'f32, 0.2'f32, 1.0'f32]))
-  )
-  var depthAttachmentInfo = VkRenderingAttachmentInfo(
-    sType: RenderingAttachmentInfo,
-    imageView: nariInstance.depthImageView,
-    imageLayout: AttachmentOptimal,
-    loadOp: Clear,
-    storeOp: DontCare,
-    clearValue: VkClearValue(depthStencil: VkClearDepthStencilValue(depth: 1.0'f32, stencil: 0))
-  )
-  var renderingInfo = VkRenderingInfo(
-    sType: RenderingInfo,
-    renderArea: VkRect2D(extent: VkExtent2D(width: w.uint32, height: h.uint32)),
-    layerCount: 1,
-    colorAttachmentCount: 1,
-    pColorAttachments: colorAttachmentInfo.addr,
-    pDepthAttachment: depthAttachmentInfo.addr)
+  var runtime = RgcRuntime(
+    cb: cb,
+    physicalDevice: nariInstance.devices[nariInstance.deviceId],
+    device: nariInstance.device,
+    allocator: nariInstance.allocator,
+    width: w,
+    height: h,
+    msaaCaps: nariInstance.msaaCaps)
 
-  vkCmdBeginRendering(cb, renderingInfo.addr)
-
-
-  var vp = VkViewport(
-    y: float32(h), width: float32(w), height: -float32(h),
-    minDepth: 0.0, maxDepth: 1.0)
-  vkCmdSetViewport(cb, 0, 1, vp.addr)
-  var scissor = VkRect2D(extent: VkExtent2D(width: w.uint32, height: h.uint32))
-  vkCmdSetScissor(cb, 0, 1, scissor.addr)
-  vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, nariInstance.pipeline)
-  vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, nariInstance.pipelineLayout,
-    0, 1, nariInstance.descriptorSetTex.addr, 0, nil)
-  var vOffset = VkDeviceSize(0)
-  vkCmdBindVertexBuffers(cb, 0, 1, nariInstance.vertexBuffer.addr, vOffset.addr)
-  vkCmdBindIndexBuffer(cb, nariInstance.vertexBuffer, nariInstance.vertexBufferSize, VK_INDEX_TYPE_UINT16)
-  vkCmdPushConstants(cb, nariInstance.pipelineLayout,
-    VkShaderStageFlags(VK_SHADER_STAGE_VERTEX_BIT), 0,
-    uint32(sizeof(VkDeviceAddress)), nariInstance.shaderDataAddresses[fi].addr)
-  vkCmdDrawIndexed(cb, nariInstance.indexCount, 3, 0, 0, 0)
-
-
-  vkCmdEndRendering(cb)
-
-  var barrierPresent = VkImageMemoryBarrier2(
-    sType: ImageMemoryBarrier2,
-    srcStageMask: VkPipelineStageFlags2{ColorAttachmentOutputBit},
-    srcAccessMask: VkAccessFlags2{ColorAttachmentWriteBit},
-    dstStageMask: VkPipelineStageFlags2{ColorAttachmentOutputBit},
-    dstAccessMask: VkAccessFlags2{VkAccessFlagBits2.None},
-    oldLayout: AttachmentOptimal,
-    newLayout: PresentSrcKhr,
-    image: nariInstance.swapchainImages[imageIndex],
-    subresourceRange: VkImageSubresourceRange(
-      aspectMask: VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT),
-      levelCount: 1, layerCount: 1)
-  )
-  var barrierPresentInfo = VkDependencyInfo(
-    sType: DependencyInfo,
-    imageMemoryBarrierCount: 1,
-    pImageMemoryBarriers: barrierPresent.addr)
-  vkCmdPipelineBarrier2(cb, barrierPresentInfo.addr)
+  initGraph(mainSceneGraph, runtime)
 
   if vkEndCommandBuffer(cb) != VkSuccess:
     quit("Can't end command buffer")
@@ -1155,7 +1126,7 @@ proc renderFrame(nariInstance; w, h: int) =
     pWaitSemaphores: nariInstance.presentSemaphores[fi].addr,
     pWaitDstStageMask: waitStage.addr,
     commandBufferCount: 1,
-    pCommandBuffers: cb.unsafeAddr,
+    pCommandBuffers: cb.addr,
     signalSemaphoreCount: 1,
     pSignalSemaphores: nariInstance.renderSemaphores[imageIndex].addr)
   if vkQueueSubmit(nariInstance.queue, 1, submitInfo.addr, nariInstance.fences[fi]) != VkSuccess:
@@ -1174,9 +1145,10 @@ proc renderFrame(nariInstance; w, h: int) =
 
 proc cleanupSwapchainResources(nariInstance) =
   discard vkDeviceWaitIdle(nariInstance.device)
-  vkDestroyImageView(nariInstance.device, nariInstance.depthImageView, nil)
-  vkDestroyImage(nariInstance.device, nariInstance.depthImage, nil)
   vkDestroyBuffer(nariInstance.device, nariInstance.vertexBuffer, nil)
+  if nariInstance.vertexBufferAlloc.handle != nil:
+    nariInstance.allocator.free(nariInstance.vertexBufferAlloc)
+    nariInstance.vertexBufferAlloc = default(Allocation)
   for i in 0..<maxFramesInFlight:
     vkDestroyBuffer(nariInstance.device, nariInstance.shaderDataBuffers[i], nil)
     nariInstance.allocator.free(nariInstance.shaderDataAllocs[i])
@@ -1184,6 +1156,7 @@ proc cleanupSwapchainResources(nariInstance) =
     vkDestroySemaphore(nariInstance.device, nariInstance.presentSemaphores[i], nil)
   for semaphore in nariInstance.renderSemaphores:
     vkDestroySemaphore(nariInstance.device, semaphore, nil)
+  nariInstance.swapchainExternalImages.setLen(0)
   vkDestroyCommandPool(nariInstance.device, nariInstance.commandPool, nil)
 
 run window, WindowEventsHandler(
@@ -1193,7 +1166,6 @@ run window, WindowEventsHandler(
     if not e.initial:
       nari.cleanupSwapchainResources()
     nari.createSwapchain(e.size.x, e.size.y)
-    nari.configureDepth(e.size.x, e.size.y)
     nari.makeBuffers()
     nari.makeShaderDataBuffers()
     nari.createSemaphores()

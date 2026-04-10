@@ -13,6 +13,7 @@ type
     UseS = (ord(UseTagId), "use")  ## module usage declaration
     ConnectS = (ord(ConnectTagId), "connect")  ## resource connection
     ExternalS = (ord(ExternalTagId), "external")  ## external resource declaration
+    PresentS = (ord(PresentTagId), "present")  ## module present sink
     RasterS = (ord(RasterTagId), "raster")  ## raster pass body
     ComputeS = (ord(ComputeTagId), "compute")  ## compute pass body
     CopyS = (ord(CopyTagId), "copy")  ## copy pass body

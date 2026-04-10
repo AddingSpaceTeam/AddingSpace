@@ -2,7 +2,7 @@
 {.experimental: "dynamicBindSym".}
 import ir, sem, semvm, bitabs, vkcodegen
 import tagmodel/model
-import std/[macros, macrocache, tables]
+import std/[macros, macrocache, tables, strutils]
 
 const mcRgirCode = CacheSeq"rgc.rgirCode" # generated rgirCode
 const mcExecute = CacheSeq"rgc.execute" # execute bodies, indexed by int
@@ -69,41 +69,77 @@ proc emitNumLit(b: var Builder, n: NimNode) =
   of nnkFloatLit: b.addStrLit $n.floatVal
   else: raiseAssert "Expected numeric literal, got: " & $n.kind
 
-proc emitUsage(b: var Builder, pragma: NimNode) =
+proc emitUsage(b: var Builder, pragmas: NimNode) =
+  assert pragmas.kind == nnkPragma and pragmas.len > 0
+  # TODO: base usage is bad, it should not be positional
+  # but I am too lazy ahahahhhha
   b.withTree "usage":
-    case pragma.kind
+    let base = pragmas[0]
+    case base.kind
     of nnkIdent:
-      b.addIdent pragma.strVal
+      b.addIdent base.strVal
       b.addEmpty()
     of nnkCall:
-      let name = pragma[0].strVal
-      let argCount = pragma.len - 1
+      let name = base[0].strVal
       b.addIdent name
       case name
       of "colorAttachment":
-        if argCount == 4:
-          b.withTree "color":
-            for i in 1 .. 4:
-              b.emitNumLit pragma[i]
-        else:
-          raiseAssert "colorAttachment expects 4 arguments (RGBA), got: " & $argCount
+        b.withTree "color":
+          for i in 1 ..< base.len:
+            b.emitNumLit base[i]
       of "depthAttachment":
-        if argCount == 1: b.emitNumLit pragma[1]
-        else:
-          raiseAssert "depthAttachment expects 1 argument (depth clear), got: " & $argCount
-      else:
-        raiseAssert "This usage doesn't support call: " & name
+        if base.len > 1: b.emitNumLit base[1]
+        else: b.addEmpty()
+      else: b.addEmpty()
     else:
-      raiseAssert "Unsupported pragma kind: " & $pragma.kind
+      raiseAssert "Unsupported pragma kind: " & $base.kind
+
+    # modifier pragmas:
+    for i in 1 ..< pragmas.len:
+      let m = pragmas[i]
+      case m.kind
+      of nnkIdent:
+        b.addIdent m.strVal
+      of nnkCall:
+        b.addIdent m[0].strVal
+        for j in 1 ..< m.len:
+          case m[j].kind
+          of nnkIdent: b.addIdent m[j].strVal
+          of nnkIntLit, nnkFloatLit: b.emitNumLit m[j]
+          else: raiseAssert "Unsupported modifier argument: " & $m[j].kind
+      else: discard
+
+proc identName(n: NimNode): string =
+  case n.kind
+  of nnkIdent: n.strVal
+  of nnkSym: n.strVal
+  of nnkOpenSymChoice, nnkClosedSymChoice: identName(n[0])
+  else: raiseAssert "Expected identifier-like node, got: " & $n.kind
 
 proc emitType(b: var Builder, n: NimNode) =
   case n.kind
   of nnkBracketExpr:
-    b.withTree n[0].strVal:
+    let baseName = n[0].strVal
+    let tag = if baseName in ["Image", "Buffer"]: baseName.toLowerAscii else: baseName
+    b.withTree tag:
       for i in 1 ..< n.len:
         b.addIdent n[i].strVal
+  of nnkCall:
+    # should used when symbol already semchecked but idk
+    # TODO: check that it possible and remove if it impossible
+    let baseName = identName(n[1])
+    let tag = if baseName in ["Image", "Buffer"]: baseName.toLowerAscii else: baseName
+    b.withTree tag:
+      for i in 2 ..< n.len:
+        b.addIdent identName(n[i])
   of nnkIdent:
-    b.addIdent n.strVal
+    case n.strVal
+    of "Image":
+      b.withTree "image": discard
+    of "Buffer":
+      b.withTree "buffer": discard
+    else:
+      b.addIdent n.strVal
   else: raiseAssert "Unsupported type expression kind: " & $n.kind
 
 proc parseCommand(b: var IrBuilder, n: NimNode) =
@@ -116,10 +152,9 @@ proc parseCommand(b: var IrBuilder, n: NimNode) =
         # parse usage
         b.dest.addIdent nameNode[0].strVal
         let pragma = nameNode[1]
-        assert pragma.kind == nnkPragma and
-               pragma.len == 1,
-               "Expected exactly one usage pragma"
-        b.dest.emitUsage pragma[0]
+        assert pragma.kind == nnkPragma and pragma.len > 0,
+               "Expected at least one usage pragma"
+        b.dest.emitUsage pragma
       else:
         b.dest.addIdent nameNode.strVal
         b.dest.addEmpty() # no usage
@@ -147,6 +182,9 @@ proc parseCommand(b: var IrBuilder, n: NimNode) =
     b.dest.withTree "connect":
       b.dest.emitResourceRef n[1]
       b.dest.emitResourceRef n[2]
+  of "present":
+    b.dest.withTree "present":
+      b.dest.emitResourceRef n[1]
   else: raiseAssert "Invalid command"
 
 proc parseStmt(b: var IrBuilder, n: NimNode) =
@@ -186,10 +224,10 @@ macro module*(signature: untyped, code: untyped) =
   let externalBase = mcExternal.len
   for s in code:
     if s.kind == nnkCommand and s[0].strVal == "external":
-      mcExternal.add bindSym(s[1].strVal)
+      mcExternal.add s[1]
   passOrModule(signature, code, "module", externalBase)
 
-macro initGraph*(name: untyped) =
+macro initGraph*(name: untyped, runtime: untyped) =
   var lit = createLiterals()
   var buf = createTokenBufVm()
   var rgir = ""
@@ -206,14 +244,14 @@ macro initGraph*(name: untyped) =
     echo beginRead(buf).toString(lit)
 
   var sem = SemContext[true](lit: lit)
-  semcheck(sem, buf)
+  semcheck(sem, buf, name.strVal)
 
   var execCursor = beginRead(sem.dest)
   let executes = getExecutesVm(execCursor, sem.lit)
   endRead(sem.dest)
 
   var extCursor = beginRead(sem.dest)
-  let externals = getExternalsVm(extCursor, sem.lit)
+  var externals = getExternalsVm(extCursor, sem.lit)
   endRead(sem.dest)
 
   echo ""
@@ -226,24 +264,38 @@ macro initGraph*(name: untyped) =
   for sym, node in externals:
     echo "  ", sem.lit.syms[sym], ": ", node.repr
 
-  result = genCode(sem, executes, externals)
-
+  genCode(sem, executes, externals, runtime)
 
 when isMainModule:
-  var swapchain: int = 0
-  var depthBuf: int = 0
+  import pkg/vulkan
 
-  pass raster pub mypass:
-    input src {.sampled.}: Image[RGBA16F, Fullscreen]
-    output dst {.colorAttachment(1.0, 0.6, 0.2, 1.0).}: Image[RGBA16F]
-    execute proc(cb: CommandBuffer) =
+  var
+    swapchain = default(RgcExternalImage)
+    cb = default(VkCommandBuffer)
+    runtime = default(RgcRuntime)
+
+  runtime.cb = cb
+  runtime.width = 1920
+  runtime.height = 1080
+  swapchain.layout = Undefined
+
+  pass raster shadowPass:
+    output depth1 {.depthAttachment.}: Image[D32F, FullScreen]
+    execute proc(cb: VkCommandBuffer) =
+      discard
+
+  pass raster pub forwardPass:
+    input shadowMap {.sampled.}: Image[D32F, FullScreen]
+    output color {.colorAttachment(1.0, 0.6, 0.2, 1.0), resolveAttachment(avg), samples(4).}: Image[RGBA16F, FullScreen]
+    output depth {.depthAttachment, resolveAttachment(sample0), samples(4).}: Image[D32F, FullScreen]
+    execute proc(cb: VkCommandBuffer) =
       discard
 
   module myModule:
-    external swapchain: Image[RGBA16F]
-    external depthBuf: Image[D32F]
-    output result {.colorAttachment.}: Image[RGBA16F]
-    use mypass
-    connect mypass.dst, result
+    external swapchain: Image[RGBA16F, FullScreen]
+    use shadowPass
+    use forwardPass
+    connect shadowPass.depth1, forwardPass.shadowMap
+    connect forwardPass.color, swapchain
 
-  initGraph(myModule)
+  initGraph(myModule, runtime)

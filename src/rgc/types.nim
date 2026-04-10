@@ -7,8 +7,6 @@ type
 proc `==`*(a, b: TypeId): bool {.borrow.}
 proc hash*(x: TypeId): Hash {.borrow.}
 
-const NoTypeId* = TypeId(0)
-
 type
   TypeTable* = object
     index: Table[string, TypeId]
@@ -57,14 +55,14 @@ proc typeToCanon*(buf: TokenBuf; start: int): string =
 
 proc intern*(t: var TypeTable; buf: TokenBuf; start: int): TypeId =
   let key = typeToCanon(buf, start)
-  result = t.index.getOrDefault(key, NoTypeId)
+  result = t.index.getOrDefault(key, TypeId(0))
   if result.uint32 != 0: return
   result = TypeId(t.names.len + 1)
   t.names.add key
   t.index[key] = result
 
 proc toString*(t: TypeTable; tid: TypeId): string =
-  if tid == NoTypeId: "<no type>"
+  if tid == TypeId(0): "<no type>"
   else: t.names[tid.int - 1]
 
 proc getOrGenType*(

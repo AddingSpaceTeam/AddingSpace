@@ -8,6 +8,7 @@
 | `(use Y .Y)` | RgcStmt | module usage declaration |
 | `(connect X X)` | RgcStmt | resource connection |
 | `(external D T)` | RgcStmt | external resource declaration |
+| `(present X)` | RgcStmt | module present sink |
 | `(raster S*)` | RgcStmt | raster pass body |
 | `(compute S*)` | RgcStmt | compute pass body |
 | `(copy S*)` | RgcStmt | copy pass body |
