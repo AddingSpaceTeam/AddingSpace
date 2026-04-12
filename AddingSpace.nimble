@@ -1,6 +1,6 @@
 requires "https://github.com/planetis-m/vulkan#07669e9"
 
-requires "https://github.com/ASVIEST/siwin#fix/vulkan_version"
+requires "https://github.com/levovix0/siwin#d9b7ae8"
 
 requires "x11"
 
