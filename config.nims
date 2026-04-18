@@ -40,13 +40,35 @@ when (
   # libktx need C++, so link libc++
   switch("passL", "-lc++")
 
-task build, "build Adding Space (Debug mode)":
+proc evalCmdParams() =
+  for param in commandLineParams():
+    let (name, val) = (
+      let x = param.split("=");
+      (x[0], if x.len > 1: x[1] else: ""))
+    
+    case name
+    of "target":
+      if not defined(feature.AddingSpace.forge):
+        quit "Target need forge feature. Run: atlas install --feature=forge"
+      # handled in crosscompile.nim
+
+proc buildTaskImpl() =
+  evalCmdParams()
   --define:nari.vulkanDebug
-  switch("out", "build/AddingSpace")
+  var exe = "build/AddingSpace"
+  when defined(feature.AddingSpace.forge) and declared(target):
+    if inferOs(target) == "Windows":
+      exe = exe.addFileExt("exe")
+  else:
+    if hostOs == "windows":
+      exe = exe.addFileExt("exe")
+
+  switch("out", exe)
   setCommand "c", "src/game_main.nim"
+
+task build, "build Adding Space (Debug mode)":
+  buildTaskImpl()
 
 task release, "build Adding Space (Release mode)":
   switch("define", "release")
-  switch("out", "build/AddingSpace")
-  setCommand "c", "src/game_main.nim"
-
+  buildTaskImpl()
