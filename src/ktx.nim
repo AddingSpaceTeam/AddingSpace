@@ -1,5 +1,6 @@
 # libktx bindings for texture loading
-{.passL: "-lktx".}
+when not defined(feature.AddingSpace.forge):
+  {.passL: "-lktx".}
 
 type
   KtxErrorCode* {.importc: "KTX_error_code", header: "<ktx.h>".} = distinct int32

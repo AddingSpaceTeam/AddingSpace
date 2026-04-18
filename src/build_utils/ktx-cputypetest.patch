@@ -1,0 +1,22 @@
+zigcc need cc arg as first arg,which cputypetest skips
+
+--- a/cmake/cputypetest.cmake
++++ b/cmake/cputypetest.cmake
+@@ -81,7 +81,7 @@
+             elseif("${CMAKE_GENERATOR_PLATFORM}" STREQUAL "ARM64" OR "${CMAKE_GENERATOR_PLATFORM}" STREQUAL "arm64")
+                 set(processor "arm64")
+             else()
+-                set(C_PREPROCESS ${CMAKE_C_COMPILER} /EP /nologo)
++                set(C_PREPROCESS ${CMAKE_C_COMPILER} ${CMAKE_C_COMPILER_ARG1} /EP /nologo)
+                 # Versions of MSVC prior to VS2019 have a supporting dll which
+                 # must be found along the search path. MSVC in VS 2019 just
+                 # works. Whether due to not having this supporting dll or using
+@@ -154,7 +154,7 @@
+                 unset(architectures)
+             else()
+                 # This will distinguish between M1 and Intel Macs
+-                set(C_PREPROCESS ${CMAKE_C_COMPILER} -E -P)
++                set(C_PREPROCESS ${CMAKE_C_COMPILER} ${CMAKE_C_COMPILER_ARG1} -E -P)
+                 execute_process(
+                     COMMAND ${C_PREPROCESS} "${CMAKE_BINARY_DIR}/cputypetest.c"
+                     OUTPUT_VARIABLE processor
