@@ -54,7 +54,6 @@ proc evalCmdParams() =
 
 proc buildTaskImpl() =
   evalCmdParams()
-  --define:nari.vulkanDebug
   var exe = "build/AddingSpace"
   when defined(feature.AddingSpace.forge) and declared(target):
     if inferOs(target) == "Windows":
@@ -67,8 +66,9 @@ proc buildTaskImpl() =
   setCommand "c", "src/game_main.nim"
 
 task build, "build Adding Space (Debug mode)":
+  --define:nari.vulkanDebug # btw, validation layers not supported in Wine/Proton, so you need release build
   buildTaskImpl()
 
 task release, "build Adding Space (Release mode)":
-  switch("define", "release")
+  --define:release
   buildTaskImpl()
