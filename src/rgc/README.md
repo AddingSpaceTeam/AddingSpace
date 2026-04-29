@@ -1,19 +1,23 @@
 # Render graph dsl lang
-# It compiles dsl code to actual render graph
+And it compiles dsl code to actual render graph
 
-Tag model:
-- Edit `src/rgc/doc/tags.md`.
-- Regenerate `src/rgc/tagmodel/tags.nim` and `src/rgc/tagmodel/model_tags.nim` with `nim c -r src/rgc/tagmodel/tools/gen_tags.nim`.
+Modifying:
+Editing tags:
+1. Edit `doc/tags.md`
+2. Run: `nim c -r tagmodel/tools/gen_tags.nim`
+It will regenerate files:
+`tagmodel/tags.nim`, `tagmodel/model_tags.nim` 
 
-# Architecture:
-1. Frontend
-   - Compile macro-based DSL declarations to `RGIR`.
-   - Or compile `.rgir` files on disk to the same IR.
-2. Semantic analysis
-   - Perform some checks
-   - Build the dependency graph and run topological sort.
-3. Code generation
+# Compile pipeline
+1. rgc dsl parsed via nim macros into RGIR, perfomed in `macrofront.nim`
+2. RGIR going into semcheck, perfomed in `sem.nim`, result is topologicaly sorted passes (modules is only graph shape thing and not present for codegen (but currently present, it's big problem, need to be fixed))
+3. Codegen — hardest place, we need to generate code for vulkan, it include some interesting things:
+  - Barriers: we generating it for every input and output of render pass, see callsite of `transitionResource`, it only place where we generate barriers. I think it even can be moved into backend agnostic IR in future.
+  - Attachments management: attachments is one of important resource types, we need to generate code that can use attacments correctly. Possible to generalize.
+  - MSAA plans: currently it seem fully backend specific but need more detail thinking about it.
 
+
+It's not current syntax, is evolved from this, TODO: fix this
 
 Render graph description syntax:
 ```nim
@@ -58,24 +62,9 @@ module MainRendering*:
   connect fx.hdrOut, tone.hdr
 ```
 
-Parsing:
-When used as macros: single node compiles to IR and initGraph(MainModule) run compilation of IR. 
-(maybe) When used with files: Module compiles to IR and then compilation runned
-
-After Parsing, we evaluate Semcheck, it checks errors, build topological sort etc.
-After semcheck, it evaluates codegen:
-there are some questions:
+There are some questions:
 - Should it be vulkan only?
 - Should it be bounded with rendering library and call it internals directly or
 more abstract and use some interface? Answer: bound it currently, but when it will partialy working, move to interface
 
-
-pass caps:
-allowed:
-(in/out SYMDEF), (raster/compute/copy ...),
-not allowed:
-(use SYM), (connect X Y), ()
-
-module caps:
-not allowed:
-(raster/compute/copy ...)
+TODO: write ops spec
