@@ -13,4 +13,4 @@ Planned:
 
 Considered:
 - Dedicated block allocator for special cases
-- TLSF allocator, if it proves necessary
+- TLSF allocator, if it proves necessary, good article: https://ricefields.me/2024/04/20/tlsf-allocator.html
