@@ -1,13 +1,23 @@
 # ECMA-119 spec is so bad...
-import std/[streams, options, endians, strutils]
-import ./posixpaths
+
+import std/[streams, options, endians, strutils, tables, sets, hashes, unicode, sequtils]
+import posixpaths
 
 type
+  PathAliasTable = Table[string, Table[string, int]]
+  PrimaryPath = (string, string)
+
   Iso9660Reader* = object 
     logicalSectorSize: int
     logicalBlockSize: int
     volume: Volume
     volumeDescriptorSet: VolumeDescriptorSet
+    rockRidgeAliases: Table[string, string]
+    rockRidgeAliasesByDir: PathAliasTable
+    rockRidgeSymlinks: Table[string, string]
+    rockRidgeLinkKinds: Table[string, PathComponent]
+    jolietAliases: Table[string, HashSet[string]]
+    jolietAliasesByDir: PathAliasTable
   
   LogicalSector = distinct string # some seq of blocks
 
@@ -75,9 +85,38 @@ type
     ReservedFileFlag2
     MultiExtent
 
+  RockRidgeNameFlag {.size: 1.} = enum
+    NmContinue
+    NmCurrent
+    NmParent
+    NmReserved
+
+  RockRidgeSymlinkComponentFlag {.size: 1.} = enum
+    SlContinue
+    SlCurrent
+    SlParent
+    SlRoot
+    SlVolumeRoot
+    SlHost
+
+  SystemUseEntry = object
+    signature: array[2, char]
+    version: byte
+    source: string
+    dataStart, dataEnd: int
+
+  RockRidgeSymlinkComponent = object
+    flags: set[RockRidgeSymlinkComponentFlag]
+    source: string
+    contentStart, contentEnd: int
+
   PathComponent* = enum
     pcFile
+    pcLinkToFile
     pcDir
+    pcLinkToDir
+    pcRockRidgeAlias
+    pcJolietAlias
   
   DirectoryRecord = object
     len: byte
@@ -92,6 +131,7 @@ type
     fileIdentifier: string # wtf: check for d-characters, d1-characters,
                            # separator 1, separator 2,
                            # (00) or (01) byte
+    systemUse: string
 
   VolumeDescriptor = object
     # CD001
@@ -184,6 +224,135 @@ proc init*(
 proc readSector(reader: var Iso9660Reader, sector: var LogicalSector, s: Stream) =
   s.readStr(reader.logicalSectorSize, string sector)
 
+proc `==`(a, b: DirectoryRecord): bool =
+  a.extentLocation == b.extentLocation and
+  a.dataLen == b.dataLen and
+  a.volumeSequenceNumber == b.volumeSequenceNumber and
+  a.fileFlags == b.fileFlags
+
+proc hash(record: DirectoryRecord): Hash =
+  var h: Hash = 0
+  h = h !& hash(record.extentLocation)
+  h = h !& hash(record.dataLen)
+  h = h !& hash(record.volumeSequenceNumber)
+  h = h !& hash(record.fileFlags)
+  result = !$h
+
+# Joliet decoder:
+
+proc isJoliet(descriptor: VolumeDescriptor): bool =
+  descriptor.content.len >= 91 and
+  descriptor.content[88] == '%' and
+  descriptor.content[89] == '/' and
+  descriptor.content[90] in {'@', 'C', 'E'}
+
+proc decodeJolietIdentifier(identifier: string): string =
+  if identifier == currentDir or identifier == parentDir: return identifier # special paths
+
+  result = ""
+  for i in 0 ..< identifier.len div 2:
+    let offset = i * 2
+    result.add Rune(identifier[offset].ord shl 8 or identifier[offset + 1].ord)
+
+# Rock ridge decoder:
+
+iterator systemUseEntries(record: DirectoryRecord): SystemUseEntry =
+  var i = 0
+  while i + 4 <= record.systemUse.len:
+    let entryLen = record.systemUse[i + 2].ord
+    if entryLen < 4 or i + entryLen > record.systemUse.len: break
+
+    yield SystemUseEntry(
+      signature: [record.systemUse[i], record.systemUse[i + 1]],
+      version: record.systemUse[i + 3].byte,
+      source: record.systemUse,
+      dataStart: i + 4,
+      dataEnd: i + entryLen)
+
+    inc i, entryLen
+
+proc decodeRockRidgeIdentifier(record: DirectoryRecord): Option[string] =
+  var name = ""
+
+  for entry in record.systemUseEntries:
+    let dataLen = entry.dataEnd - entry.dataStart
+    if entry.signature != ['N', 'M'] or dataLen == 0:
+      continue
+
+    let flags = cast[set[RockRidgeNameFlag]](entry.source[entry.dataStart])
+    if ({NmCurrent, NmParent, NmReserved} * flags).len == 0 and
+        dataLen > 1:
+      let oldLen = name.len
+      name.setLen(oldLen + dataLen - 1)
+      copyMem(
+        addr name[oldLen],
+        addr entry.source[entry.dataStart + 1],
+        dataLen - 1)
+
+  if name.len > 0: some(name)
+  else: none(string)
+
+iterator rockRidgeSymlinkComponents(entry: SystemUseEntry): RockRidgeSymlinkComponent =
+  var i = entry.dataStart + 1
+  while i + 2 <= entry.dataEnd:
+    let next = i + 2 + entry.source[i + 1].ord
+    if next > entry.dataEnd: break
+
+    yield RockRidgeSymlinkComponent(
+      flags: cast[set[RockRidgeSymlinkComponentFlag]](entry.source[i]),
+      source: entry.source,
+      contentStart: i + 2,
+      contentEnd: next)
+
+    i = next
+
+proc decodeRockRidgeSymlinkTarget(record: DirectoryRecord): Option[string] =
+  for entry in record.systemUseEntries:
+    if entry.signature != ['S', 'L'] or entry.dataEnd == entry.dataStart:
+      continue
+
+    var
+      target = ""
+      pending = ""
+
+    template flushPending() =
+      if pending.len > 0:
+        target = joinPosixPath(target, pending)
+        pending.setLen(0)
+
+    for component in entry.rockRidgeSymlinkComponents:
+      if SlCurrent in component.flags:
+        flushPending()
+        target = joinPosixPath(target, ".")
+      elif SlParent in component.flags:
+        flushPending()
+        target = joinPosixPath(target, "..")
+
+      elif ({SlRoot, SlVolumeRoot} * component.flags).len > 0:
+        pending.setLen(0)
+        target = "/"
+      elif SlHost in component.flags: discard
+      else:
+        let contentLen = component.contentEnd - component.contentStart
+        if contentLen > 0:
+          let oldLen = pending.len
+          pending.setLen(oldLen + contentLen)
+          copyMem(
+            addr pending[oldLen],
+            addr component.source[component.contentStart],
+            contentLen)
+        if SlContinue notin component.flags:
+          flushPending()
+
+    flushPending()
+    return some(target)
+
+  none(string)
+
+
+
+
+
 proc parseDirectoryRecord(reader: var Iso9660Reader, stream: Stream, record: var DirectoryRecord): bool =
   result = true
   let start = stream.getPosition()
@@ -218,15 +387,208 @@ proc parseDirectoryRecord(reader: var Iso9660Reader, stream: Stream, record: var
   let fileIdentifierLen = stream.readUint8().int
   record.fileIdentifier = stream.readStr(fileIdentifierLen)
 
+  if fileIdentifierLen mod 2 == 0:
+    stream.setPosition(stream.getPosition + 1)
+
+  let systemUseLen = start + record.len.int - stream.getPosition()
+  record.systemUse = 
+    if systemUseLen > 0: stream.readStr(systemUseLen)
+    else: ""
+
   stream.setPosition(start + record.len.int)
 
-iterator walkDir*(
+iterator directoryRecords(reader: var Iso9660Reader, s: Stream, dirRecord: DirectoryRecord): DirectoryRecord =
+  let
+    start = int64(dirRecord.extentLocation) * int64(reader.logicalBlockSize)
+    finish = start + int64(dirRecord.dataLen)
+
+  s.setPosition(start)
+
+  while s.getPosition() < finish:
+    let
+      recordStart = s.getPosition()
+      recordLen = s.readUint8()
+
+    if recordLen == 0'u8:
+      s.setPosition((recordStart div reader.logicalBlockSize + 1) * reader.logicalBlockSize)
+      continue
+
+    s.setPosition(recordStart)
+    var record = DirectoryRecord()
+    if not reader.parseDirectoryRecord(s, record): break
+
+    yield record
+
+proc isDirRockRidgeSymlink(
+    targetPath: string,
+    rockRidgePaths: Table[string, string],
+    primaryKinds: Table[string, PathComponent],
+    rockRidgeSymlinks: Table[string, string]): bool =
+  result = false
+  var
+    stack = @[targetPath]
+    seen = initHashSet[string]()
+
+  while stack.len > 0:
+    let path = joinPosixPath("/", stack.pop())
+    if path notin rockRidgePaths: continue
+
+    if rockRidgePaths[path] in seen: continue
+    seen.incl rockRidgePaths[path]
+
+    if
+        rockRidgePaths[path] in primaryKinds and
+        primaryKinds[rockRidgePaths[path]] == pcDir:
+
+      return true
+
+    if rockRidgePaths[path] in rockRidgeSymlinks:
+      stack.add rockRidgeSymlinks[rockRidgePaths[path]]
+
+proc scanPrimaryTree(
+    reader: var Iso9660Reader,
+    s: Stream,
+    dirRecord: DirectoryRecord,
+    isoDir, rrDir: string,
+    primaryPaths: var Table[DirectoryRecord, seq[PrimaryPath]],
+    primaryKinds: var Table[string, PathComponent],
+    rockRidgePaths: var Table[string, string],
+    rockRidgeAliases: var Table[string, string],
+    rockRidgeAliasesByDir: var PathAliasTable,
+    rockRidgeSymlinks: var Table[string, string]) =
+  var stack = @[(dirRecord, isoDir, rrDir)]
+
+  while stack.len > 0:
+    let (dirRecord, isoDir, rrDir) = stack.pop()
+
+    for record in reader.directoryRecords(s, dirRecord):
+      if record.fileIdentifier == currentDir or record.fileIdentifier == parentDir:
+        continue # special fileIdentifiers
+
+      let isoPath = joinPosixPath(isoDir, record.fileIdentifier)
+
+      primaryPaths.mgetOrPut(record, @[]).add (isoDir, isoPath)
+      primaryKinds[isoPath] =
+        if Directory in record.fileFlags: pcDir
+        else: pcFile
+
+      var rrName = record.decodeRockRidgeIdentifier()
+      if rrName.isNone:
+        rrName = some(record.fileIdentifier)
+
+      let rrPath = joinPosixPath(rrDir, rrName.get)
+      rockRidgePaths[rrPath] = isoPath
+
+      if rrName.isSome and rrPath != isoPath:
+        rockRidgeAliases[rrPath] = isoPath
+        rockRidgeAliasesByDir.mgetOrPut(
+          isoDir, initTable[string, int]())[rrPath] =
+            rrPath.rfind('/') + 1
+
+      let symlinkTarget = record.decodeRockRidgeSymlinkTarget()
+      if symlinkTarget.isSome:
+        rockRidgeSymlinks[isoPath] = resolvePosixPath(rrDir, symlinkTarget.get)
+
+      if Directory in record.fileFlags:
+        stack.add (record, isoPath, rrPath)
+
+proc collectJolietAliases(
   reader: var Iso9660Reader,
   s: Stream,
-  dir: string,
-  relative = false,
-  checkDir = false,
-  skipSpecial = false): tuple[kind: PathComponent, path: string] =
+  dirRecord: DirectoryRecord,
+  jolietDir: string,
+  primaryPaths: Table[DirectoryRecord, seq[PrimaryPath]],
+  jolietAliases: var Table[string, HashSet[string]],
+  jolietAliasesByDir: var PathAliasTable) =
+  var stack = @[(dirRecord, jolietDir)]
+
+  while stack.len > 0:
+    let (dirRecord, jolietDir) = stack.pop()
+
+    for record in reader.directoryRecords(s, dirRecord):
+      if record.fileIdentifier == currentDir or record.fileIdentifier == parentDir:
+        continue # special fileIdentifier
+
+      let
+        jolietName = record.fileIdentifier.decodeJolietIdentifier
+        jolietPath = joinPosixPath(jolietDir, jolietName)
+
+      if record in primaryPaths:
+        for primaryPath in primaryPaths[record]:
+          let (primaryDir, isoPath) = primaryPath
+          jolietAliases.mgetOrPut(jolietPath, initHashSet[string]()).incl isoPath
+          jolietAliasesByDir.mgetOrPut(primaryDir, initTable[string, int]())[jolietPath] =
+              jolietPath.rfind('/') + 1
+
+      if Directory in record.fileFlags:
+        stack.add (record, jolietPath)
+
+proc scanExtensions(reader: var Iso9660Reader, s: Stream) =
+  var primaryPaths = initTable[DirectoryRecord, seq[PrimaryPath]]()
+  var primaryKinds = initTable[string, PathComponent]()
+  var rockRidgePaths = initTable[string, string]()
+
+  reader.scanPrimaryTree(
+    s, reader.volumeDescriptorSet.primary.get.directoryRecord,
+    "/", "/",
+    primaryPaths, primaryKinds,
+    rockRidgePaths, reader.rockRidgeAliases,
+    reader.rockRidgeAliasesByDir, reader.rockRidgeSymlinks)
+
+  for isoPath, targetPath in reader.rockRidgeSymlinks:
+    reader.rockRidgeLinkKinds[isoPath] =
+      if isDirRockRidgeSymlink(
+          targetPath, rockRidgePaths,
+          primaryKinds, reader.rockRidgeSymlinks): pcLinkToDir
+      else: pcLinkToFile
+
+  for descriptor in reader.volumeDescriptorSet.supplementary:
+    if descriptor.isJoliet:
+      reader.collectJolietAliases(
+        s, descriptor.directoryRecord, "/",
+        primaryPaths, reader.jolietAliases, reader.jolietAliasesByDir)
+      break
+
+proc expandRockRidgeAlias*(reader: Iso9660Reader, path: string): Option[string] =
+  let normalizedPath = joinPosixPath("/", path)
+  if normalizedPath in reader.rockRidgeAliases:
+    some(reader.rockRidgeAliases[normalizedPath])
+  else: none(string)
+
+proc expandJolietAlias*(reader: Iso9660Reader, path: string): seq[string] =
+  let normalizedPath = joinPosixPath("/", path)
+  if normalizedPath in reader.jolietAliases:
+    reader.jolietAliases[normalizedPath].toSeq()
+  else: @[]
+
+proc expandSymlink*(reader: Iso9660Reader, symlinkPath: string): string =
+  let normalizedPath = joinPosixPath("/", symlinkPath)
+  if normalizedPath notin reader.rockRidgeSymlinks:
+    raise newException(OSError, "No such symlink: " & symlinkPath)
+
+  reader.rockRidgeSymlinks[normalizedPath]
+
+proc pathComponentKind(
+    reader: Iso9660Reader,
+    isoPath: string,
+    record: DirectoryRecord): PathComponent =
+
+  if record.decodeRockRidgeSymlinkTarget.isSome:
+    if isoPath in reader.rockRidgeLinkKinds:
+      return reader.rockRidgeLinkKinds[isoPath]
+
+    return pcLinkToFile
+
+  if Directory in record.fileFlags: pcDir
+  else: pcFile
+
+iterator walkDir*(
+    reader: var Iso9660Reader,
+    s: Stream,
+    dir: string,
+    relative = false,
+    checkDir = false,
+    skipSpecial = false): tuple[kind: PathComponent, path: string] =
   # Highly co-authored with gpt 5.5
   var
     dirRecord = reader.volumeDescriptorSet.primary.get.directoryRecord
@@ -278,24 +640,38 @@ iterator walkDir*(
 
     let
       name = record.fileIdentifier
-      kind =
-        if Directory in record.fileFlags: pcDir
-        else: pcFile
+      isoPath = joinPosixPath(dirPath, name)
+      kind = reader.pathComponentKind(isoPath, record)
       path =
         if relative: name
-        else: joinPosixPath(dirPath, name)
+        else: isoPath
 
     yield (kind, path)
 
   if componentIdx < components.len and checkDir:
     raise newException(OSError, "No such directory: " & dir)
 
+  if componentIdx >= components.len:
+    if dirPath in reader.rockRidgeAliasesByDir:
+      for aliasPath, nameStart in reader.rockRidgeAliasesByDir[dirPath]:
+        yield (
+          pcRockRidgeAlias,
+          if relative: aliasPath[nameStart .. ^1] # allocation
+          else: aliasPath)
+
+    if dirPath in reader.jolietAliasesByDir:
+      for aliasPath, nameStart in reader.jolietAliasesByDir[dirPath]:
+        yield (
+          pcJolietAlias,
+          if relative: aliasPath[nameStart .. ^1]
+          else: aliasPath)
+
 iterator walkDirRec*(
-  reader: var Iso9660Reader,
-  s: Stream,
-  dir: string,
-  yieldFilter = {pcFile}, followFilter = {pcDir},
-  relative = false, checkDir = false, skipSpecial = false): string =
+    reader: var Iso9660Reader,
+    s: Stream,
+    dir: string,
+    yieldFilter = {pcFile}, followFilter = {pcDir},
+    relative = false, checkDir = false, skipSpecial = false): string =
   # I just make small fix to std impl of it but not tested it properly
   # but it should work correctly
   var stack = @[""]
@@ -454,6 +830,8 @@ proc read*(reader: var Iso9660Reader, s: Stream) =
     var newSector = LogicalSector(newStringOfCap(reader.logicalSectorSize))
     reader.readSector newSector, s
     if reader.parseVolumeDescriptorSet(newSector): break
+
+  reader.scanExtensions(s)
 
 when isMainModule:
   var s = newFileStream("1mb.iso")
