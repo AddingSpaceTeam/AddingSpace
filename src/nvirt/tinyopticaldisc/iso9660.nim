@@ -1,4 +1,11 @@
 # ECMA-119 spec is so bad...
+# This module implements ISO 9660
+# API:
+# walkFiles - same as std/os
+# walkFilesRec - same as std/os
+# readFile - reads file
+# expandRockRidgeAlias, expandJoiletAlias - get ISO 9660 entry for pcRockRidgeAlias, pcJolietAlias
+# expandSymlink - get symlink target
 
 import std/[streams, options, endians, strutils, tables, sets, hashes, unicode, sequtils]
 import posixpaths
@@ -561,12 +568,118 @@ proc expandJolietAlias*(reader: Iso9660Reader, path: string): seq[string] =
     reader.jolietAliases[normalizedPath].toSeq()
   else: @[]
 
+proc resolvePrimaryPath(reader: Iso9660Reader, path: string): string =
+  let normalizedPath = joinPosixPath("/", path)
+  var found = false
+
+  if normalizedPath in reader.rockRidgeAliases:
+    result = reader.rockRidgeAliases[normalizedPath]
+    found = true
+  else:
+    result = normalizedPath
+
+  if normalizedPath in reader.jolietAliases:
+    for isoPath in reader.jolietAliases[normalizedPath]:
+      if found and isoPath != result:
+        raise newException(OSError, "Ambiguous alias: " & path)
+
+      result = isoPath
+      found = true
+
+proc findPrimaryRecords(
+    reader: var Iso9660Reader,
+    s: Stream,
+    path: string,
+    records: var seq[DirectoryRecord]): bool =
+  records.setLen(0)
+
+  var dirRecord = reader.volumeDescriptorSet.primary.get.directoryRecord
+  let
+    normalizedPath = joinPosixPath("/", path).strip(chars = {'/'})
+    components =
+      if normalizedPath.len == 0: newSeq[string]()
+      else: normalizedPath.split('/')
+
+  if components.len == 0:
+    records.add dirRecord
+    return true
+
+  for componentIdx, component in components:
+    var found = false
+
+    for record in reader.directoryRecords(s, dirRecord):
+      if record.fileIdentifier == currentDir or record.fileIdentifier == parentDir:
+        continue
+      if record.fileIdentifier != component:
+        continue
+
+      found = true
+      if componentIdx == components.high:
+        records.add record
+        if MultiExtent in record.fileFlags:
+          continue
+
+        return true
+
+      if Directory notin record.fileFlags:
+        return false
+
+      dirRecord = record
+      break
+
+    if not found:
+      return false
+
+  records.len > 0 and MultiExtent notin records[^1].fileFlags
+
 proc expandSymlink*(reader: Iso9660Reader, symlinkPath: string): string =
   let normalizedPath = joinPosixPath("/", symlinkPath)
   if normalizedPath notin reader.rockRidgeSymlinks:
     raise newException(OSError, "No such symlink: " & symlinkPath)
 
   reader.rockRidgeSymlinks[normalizedPath]
+
+proc readFile*(reader: var Iso9660Reader, s: Stream, path: string): string =
+  result = ""
+  var
+    isoPath = reader.resolvePrimaryPath(path)
+    records: seq[DirectoryRecord] = @[]
+    seen = initHashSet[string]()
+
+  while true:
+    if isoPath in seen:
+      raise newException(OSError, "Symlink loop: " & path)
+    seen.incl isoPath
+
+    if not reader.findPrimaryRecords(s, isoPath, records):
+      raise newException(OSError, "No such file: " & path)
+
+    if Directory in records[0].fileFlags:
+      raise newException(OSError, "Is a directory: " & path)
+
+    if isoPath in reader.rockRidgeSymlinks:
+      isoPath = reader.resolvePrimaryPath(reader.rockRidgeSymlinks[isoPath])
+      continue
+
+    for record in records:
+      if record.fileUnitSize != 0 or record.interleaveGapSize != 0:
+        raise newException(OSError, "Interleaved files are not supported: " & path)
+      if record.dataLen > uint64(high(int) - result.len):
+        raise newException(OSError, "File is too large: " & path)
+
+      let dataLen = int(record.dataLen)
+      if dataLen == 0:
+        continue
+
+      let oldLen = result.len
+      result.setLen(oldLen + dataLen)
+      s.setPosition(int64(record.extentLocation) * int64(reader.logicalBlockSize))
+      let readLen = s.readData(addr result[oldLen], dataLen)
+      if readLen != dataLen:
+        result.setLen(oldLen + readLen)
+        raise newException(OSError, "Unexpected end of file: " & path)
+
+    return
 
 proc pathComponentKind(
     reader: Iso9660Reader,
