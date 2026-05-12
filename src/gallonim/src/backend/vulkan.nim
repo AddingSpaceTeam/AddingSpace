@@ -51,7 +51,7 @@ proc allocateDeviceMemory*(
   var memory = VkDeviceMemory(0)
   let res = vkAllocateMemory(b.device, allocCi.addr, nil, memory.addr)
   assert res == VkSuccess, "vkAllocateMemory failed: " & $res
-  return cast[pointer](memory)
+  cast[pointer](memory)
 
 proc freeDeviceMemory*(b: var VulkanAllocModel, handle: pointer) =
   vkFreeMemory(b.device, cast[VkDeviceMemory](handle), nil)
