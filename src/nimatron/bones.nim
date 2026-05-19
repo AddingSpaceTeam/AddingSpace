@@ -4,7 +4,7 @@ type
   Bone* = ref object
     p0*: Vec3
     p1*: Vec3
-    bones*: seq[Bone]
+    bones*: seq[Bone] # TODO: add parent field that basicly id and not need heap
 
   Skeleton* = object
     bone*: Bone
@@ -29,7 +29,28 @@ type
     pos: seq[Vec3]
     normal: seq[Vec3]
 
-proc inferWeightsBhw*(mesh: var SkinningVertices, skeleton: Skeleton) =
+proc findNearestBone(p: Vec3, skeleton: Skeleton): (Bone, Vec3) =
+  # nearest bone + closest point on bone
+
+  result = (skeleton.bone, skeleton.bone.p0)
+  var oldMin: float32 = float32.high
+  var s = @[skeleton.bone]
+
+  while s.len > 0:
+    let bone = s.pop()
+    let delta = bone.p1 - bone.p0
+    let t = clamp(dot(p - bone.p0, delta) / delta.lengthSq, 0.0, 1.0) # TODO: (important) test if delta = 0
+    let closest = bone.p0 + delta * t
+    let dSq = lengthSq(p - closest)
+
+    if dSq < oldMin:
+      result = (bone, closest)
+      oldMin = dSq
+
+    for i in bone.bones:
+      s.add i
+
+proc inferWeightsBhw*(mesh: var SkinningVertices, skeleton: Skeleton, c = 1.0) =
   #[
   automatic Weights like in blender, trying to compute
   bone weights for vertices using
@@ -55,7 +76,11 @@ proc inferWeightsBhw*(mesh: var SkinningVertices, skeleton: Skeleton) =
   }
   ]#
 
-  discard
+  var hDiag = newSeq[float32](mesh.pos.len)
+  for i in 0..<mesh.pos.len:
+    let (nearestBone, closestPoint) = findNearestBone(mesh.pos[i], skeleton)
+    hDiag[i] = c / lengthSq(mesh.pos[i] - closestPoint)
+
 
 # proc inferWeightsBbw*(mesh: var SkinningMesh) =
 #   # implements BBW (Bounded Biharmonic Weights)
