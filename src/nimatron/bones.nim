@@ -4,10 +4,10 @@ type
   Bone* = ref object
     p0*: Vec3
     p1*: Vec3
-    bones*: seq[Bone] # TODO: add parent field that basicly id and not need heap
+    parent*: int
 
   Skeleton* = object
-    bone*: Bone
+    bones*: seq[Bone]
 
   SkinningVertices = object
     # Vertex data that need for skinning (LBS)
@@ -32,12 +32,10 @@ type
 proc findNearestBone(p: Vec3, skeleton: Skeleton): (Bone, Vec3) =
   # nearest bone + closest point on bone
 
-  result = (skeleton.bone, skeleton.bone.p0)
+  result = (skeleton.bones[0], skeleton.bones[0].p0) # Open question: how to encode not found = no bones
   var oldMin: float32 = float32.high
-  var s = @[skeleton.bone]
 
-  while s.len > 0:
-    let bone = s.pop()
+  for bone in skeleton.bones:
     let delta = bone.p1 - bone.p0
     let t = clamp(dot(p - bone.p0, delta) / delta.lengthSq, 0.0, 1.0) # TODO: (important) test if delta = 0
     let closest = bone.p0 + delta * t
@@ -46,9 +44,6 @@ proc findNearestBone(p: Vec3, skeleton: Skeleton): (Bone, Vec3) =
     if dSq < oldMin:
       result = (bone, closest)
       oldMin = dSq
-
-    for i in bone.bones:
-      s.add i
 
 proc inferWeightsBhw*(mesh: var SkinningVertices, skeleton: Skeleton, c = 1.0) =
   #[
@@ -78,7 +73,7 @@ proc inferWeightsBhw*(mesh: var SkinningVertices, skeleton: Skeleton, c = 1.0) =
 
   var hDiag = newSeq[float32](mesh.pos.len)
   for i in 0..<mesh.pos.len:
-    let (nearestBone, closestPoint) = findNearestBone(mesh.pos[i], skeleton)
+    let (_, closestPoint) = findNearestBone(mesh.pos[i], skeleton)
     hDiag[i] = c / lengthSq(mesh.pos[i] - closestPoint)
 
 
