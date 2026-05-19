@@ -80,7 +80,7 @@ proc inferWeightsBhw*(mesh: var SkinningVertices, skeleton: Skeleton, c = 1.0) =
     let (nearestBone, closestPoint) = findNearestBone(mesh.pos[j], skeleton)
     hDiag[j] = c / lengthSq(mesh.pos[j] - closestPoint)
     rhs[nearestBone][j] = hDiag[j] # optimization: no loop needed! (but with cost in memory)
-  
+
   # collected: p_i, H
 
 # proc inferWeightsBbw*(mesh: var SkinningMesh) =
