@@ -1,10 +1,11 @@
 import pkg/vmath
 
 type
+  BoneId* = distinct int
   Bone* = ref object
     p0*: Vec3
     p1*: Vec3
-    parent*: int
+    parent*: BoneId
 
   Skeleton* = object
     bones*: seq[Bone]
@@ -29,20 +30,21 @@ type
     pos: seq[Vec3]
     normal: seq[Vec3]
 
-proc findNearestBone(p: Vec3, skeleton: Skeleton): (Bone, Vec3) =
+proc findNearestBone(p: Vec3, skeleton: Skeleton): (BoneId, Vec3) =
   # nearest bone + closest point on bone
 
-  result = (skeleton.bones[0], skeleton.bones[0].p0) # Open question: how to encode not found = no bones
+  result = (BoneId(-1), vec3(0))
   var oldMin: float32 = float32.high
 
-  for bone in skeleton.bones:
+  for boneId in 0..<skeleton.bones.len:
+    let bone = skeleton.bones[boneId]
     let delta = bone.p1 - bone.p0
     let t = clamp(dot(p - bone.p0, delta) / delta.lengthSq, 0.0, 1.0) # TODO: (important) test if delta = 0
     let closest = bone.p0 + delta * t
     let dSq = lengthSq(p - closest)
 
     if dSq < oldMin:
-      result = (bone, closest)
+      result = (BoneId(boneId), closest)
       oldMin = dSq
 
 proc inferWeightsBhw*(mesh: var SkinningVertices, skeleton: Skeleton, c = 1.0) =
@@ -72,10 +74,14 @@ proc inferWeightsBhw*(mesh: var SkinningVertices, skeleton: Skeleton, c = 1.0) =
   ]#
 
   var hDiag = newSeq[float32](mesh.pos.len)
-  for i in 0..<mesh.pos.len:
-    let (_, closestPoint) = findNearestBone(mesh.pos[i], skeleton)
-    hDiag[i] = c / lengthSq(mesh.pos[i] - closestPoint)
+  var rhs = newSeqWith(skeleton.bones.len, newSeq[float32](mesh.pos.len))
 
+  for j in 0..<mesh.pos.len:
+    let (nearestBone, closestPoint) = findNearestBone(mesh.pos[j], skeleton)
+    hDiag[j] = c / lengthSq(mesh.pos[j] - closestPoint)
+    rhs[nearestBone][j] = hDiag[j] # optimization: no loop needed! (but with cost in memory)
+  
+  # collected: p_i, H
 
 # proc inferWeightsBbw*(mesh: var SkinningMesh) =
 #   # implements BBW (Bounded Biharmonic Weights)
