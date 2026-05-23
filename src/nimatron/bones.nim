@@ -1,8 +1,9 @@
 import pkg/vmath
+import std/sequtils
 
 type
   BoneId* = distinct int
-  Bone* = ref object
+  Bone* = object
     p0*: Vec3
     p1*: Vec3
     parent*: BoneId
@@ -47,6 +48,61 @@ proc findNearestBone(p: Vec3, skeleton: Skeleton): (BoneId, Vec3) =
       result = (BoneId(boneId), closest)
       oldMin = dSq
 
+type CooTriplet = object
+  row, col: int32
+  value: float32
+
+type CotangentLaplacian* = object
+  L: seq[CooTriplet] # Σ_j (cot a_ij + cot b_ij)/2
+  ai: seq[float32] # a_i (vertex area)
+
+proc cotangentLaplacian(mesh: var SkinningVertices, indices: seq[uint32]): CotangentLaplacian =
+  ## Implements formula: (Δf)_i = (1/a_i) * Σ_j  (cot a_ij + cot b_ij)/2 * (f_i − f_j)
+  ## (f) not included (it depending on function)
+  ## Σ_j  (cot a_ij + cot b_ij)/2 returned as L
+  ## a_i computed as ai
+  # also Δ = M⁻¹ * L (M is diag a_i)
+
+  # where a_i - Barycentric dual area - 1/3 * (sum of areas of all triangles containing vertex i)
+  # for triangle ABC we can get cot via
+  # cot(angle ABC) = dot(BA, BC) / |cross(BA, BC)|
+  result = CotangentLaplacian(
+    L: newSeqOfCap[CooTriplet](indices.len * 4), # don't tested but compiler should rewrite it into shl 2
+    ai: newSeq[float32](mesh.pos.len)
+  )
+  # for first step we are finding cot sums: Σ_j (cot a_ij + cot b_ij)/2
+
+  template contribute(corner, a, b: untyped) =
+    let
+      u = mesh.pos[a] - mesh.pos[corner]
+      v = mesh.pos[b] - mesh.pos[corner]
+      w = dot(u, v) * invFourArea
+
+    result.L.add CooTriplet(row: int32(a), col: int32(b), value: -w)
+    result.L.add CooTriplet(row: int32(b), col: int32(a), value: -w)
+    result.L.add CooTriplet(row: int32(a), col: int32(a), value:  w)
+    result.L.add CooTriplet(row: int32(b), col: int32(b), value:  w)
+
+
+  for t in 0..<indices.len div 3:
+    # NOTE: we uses triangles (TRIANGLE), for TRIANGLE_FAN or TRIANGLE_STRIP
+    # you need conversion
+    let i = indices[3*t]
+    let j = indices[3*t + 1]
+    let k = indices[3*t + 2]
+    let twoArea = length(cross(mesh.pos[j] - mesh.pos[i], mesh.pos[k] - mesh.pos[i]))
+    if twoArea < 1e-5'f32: continue # I don't realy know correct coefficent, fp math is broken
+    # barycentric vertex area: a_i = (1/3) Σ triArea
+    let vertexArea = twoArea * static(0.5'f32 / 3.0'f32)
+    result.ai[i] += vertexArea
+    result.ai[j] += vertexArea
+    result.ai[k] += vertexArea
+
+    let invFourArea = 0.5'f32 / twoArea
+    contribute(i, j, k)
+    contribute(j, k, i)
+    contribute(k, i, j)
+
 proc inferWeightsBhw*(mesh: var SkinningVertices, skeleton: Skeleton, c = 1.0) =
   #[
   automatic Weights like in blender, trying to compute
@@ -79,7 +135,7 @@ proc inferWeightsBhw*(mesh: var SkinningVertices, skeleton: Skeleton, c = 1.0) =
   for j in 0..<mesh.pos.len:
     let (nearestBone, closestPoint) = findNearestBone(mesh.pos[j], skeleton)
     hDiag[j] = c / lengthSq(mesh.pos[j] - closestPoint)
-    rhs[nearestBone][j] = hDiag[j] # optimization: no loop needed! (but with cost in memory)
+    rhs[int(nearestBone)][j] = hDiag[j] # optimization: no loop needed! (but with cost in memory)
 
   # collected: p_i, H
 
