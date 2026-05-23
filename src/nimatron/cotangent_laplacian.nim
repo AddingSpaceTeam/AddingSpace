@@ -5,7 +5,7 @@ type CotangentLaplacian* = object
   L*: seq[CooTriplet] # Σ_j (cot a_ij + cot b_ij)/2
   ai*: seq[float32] # a_i (vertex area)
 
-proc cotangentLaplacian*(pos: openArray[Vec3], indices: openArray[uint32]): CotangentLaplacian =
+proc cotangentLaplacian*[V: Vec2 or Vec3](pos: openArray[V], indices: openArray[uint32]): CotangentLaplacian =
   ## Implements formula: (Δf)_i = (1/a_i) * Σ_j  (cot a_ij + cot b_ij)/2 * (f_i − f_j)
   ## (f) not included (it depending on function)
   ## Σ_j  (cot a_ij + cot b_ij)/2 returned as L
@@ -39,8 +39,14 @@ proc cotangentLaplacian*(pos: openArray[Vec3], indices: openArray[uint32]): Cota
     let i = indices[3*t]
     let j = indices[3*t + 1]
     let k = indices[3*t + 2]
-    let twoArea = length(cross(pos[j] - pos[i], pos[k] - pos[i]))
+    let twoArea =
+      when V is Vec2:
+        abs(cross(pos[j] - pos[i], pos[k] - pos[i]))
+      else:
+        length(cross(pos[j] - pos[i], pos[k] - pos[i]))
+
     if twoArea < 1e-5'f32: continue # I don't realy know correct coefficent, fp math is broken
+
     # barycentric vertex area: a_i = (1/3) Σ triArea
     let vertexArea = twoArea * static(0.5'f32 / 3.0'f32)
     result.ai[i] += vertexArea
