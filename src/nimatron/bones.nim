@@ -1,5 +1,6 @@
 import pkg/vmath
 import std/sequtils
+import cotangent_laplacian, sparsemat
 
 type
   BoneId* = distinct int
@@ -48,7 +49,7 @@ proc findNearestBone(p: Vec3, skeleton: Skeleton): (BoneId, Vec3) =
       result = (BoneId(boneId), closest)
       oldMin = dSq
 
-proc inferWeightsBhw*(mesh: var SkinningVertices, skeleton: Skeleton, c = 1.0) =
+proc inferWeightsBhw*(mesh: var SkinningVertices, indices: openArray[uint32], skeleton: Skeleton, c = 1.0) =
   #[
   automatic Weights like in blender, trying to compute
   bone weights for vertices using
@@ -74,15 +75,26 @@ proc inferWeightsBhw*(mesh: var SkinningVertices, skeleton: Skeleton, c = 1.0) =
   }
   ]#
 
+  let laplacian = cotangentLaplacian(mesh.pos, indices)
+
   var hDiag = newSeq[float32](mesh.pos.len)
   var rhs = newSeqWith(skeleton.bones.len, newSeq[float32](mesh.pos.len))
 
   for j in 0..<mesh.pos.len:
     let (nearestBone, closestPoint) = findNearestBone(mesh.pos[j], skeleton)
     hDiag[j] = c / lengthSq(mesh.pos[j] - closestPoint)
-    rhs[int(nearestBone)][j] = hDiag[j] # optimization: no loop needed! (but with cost in memory)
+    rhs[int(nearestBone)][j] = laplacian.ai[j] * hDiag[j] # optimization: no loop needed! (but with cost in memory)
 
-  # collected: p_i, H
+  # collected: p_i, H, -Δ
+
+  var lhs = ensureMove laplacian.L
+
+  for i in 0..<laplacian.ai.len:
+    let potential = laplacian.ai[i] * hDiag[i]
+    if potential < 1e-5'f32: continue # I don't realy know correct coefficent, fp math is broken
+    lhs.add CooTriplet(row: int32(i), col: int32(i), value: potential)
+
+  discard lhs.toCsc()
 
 # proc inferWeightsBbw*(mesh: var SkinningMesh) =
 #   # implements BBW (Bounded Biharmonic Weights)

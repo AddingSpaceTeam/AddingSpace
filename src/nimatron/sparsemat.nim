@@ -13,15 +13,17 @@ type
     value*: float32
 
   CscMat* = object
-    data: seq[float32]
-    indices: seq[int32]
-    indptr: seq[int32]
+    data*: seq[float32]
+    indices*: seq[int32]
+    indptr*: seq[int32]
 
 proc toCsc*(
     mat: seq[CooTriplet],
-    numRows, numCols: int32,
     sorted: static bool = false): CscMat =
   ## Converts COO matrix to CSC matrix
+  # port of https://github.com/eaymerich/Sparse2015/blob/4c9db801eb2840f256ce7763752ef079c84e4d54/code/csc.h#L163
+  # but with sorting and sum duplicates
+
   var mat = mat
   when not sorted:
     mat.sort do (a, b: CooTriplet) -> int:
@@ -29,24 +31,32 @@ proc toCsc*(
       if result == 0:
         result = cmp(a.row, b.row)
 
-  # port of https://github.com/eaymerich/Sparse2015/blob/4c9db801eb2840f256ce7763752ef079c84e4d54/code/csc.h#L163
-  # Init mem for CSR matrix
+  let numCols =
+    if mat.len > 0: mat[^1].col + 1
+    else: 0'i32
+
+  # Init mem for CSC matrix
   result = CscMat(
-    data: newSeq[float32](mat.len),
-    indices: newSeq[int32](mat.len),
+    data: newSeqOfCap[float32](mat.len),
+    indices: newSeqOfCap[int32](mat.len),
     indptr: newSeq[int32](numCols + 1)
   )
 
-  # Copy elements row by row
+  # Copy elements column by column
   var tot: int32 = 0
   result.indptr[0] = tot
   for i in 0..<numCols:
     while tot < mat.len and mat[tot].col == i:
-      result.data[tot] = mat[tot].value
-      result.indices[tot] = mat[tot].row
+      if  tot > 0 and
+          mat[tot-1].col == mat[tot].col and
+          mat[tot-1].row == mat[tot].row:
+        result.data[^1] += mat[tot].value
+      else:
+        result.data.add mat[tot].value
+        result.indices.add mat[tot].row
       inc tot
 
-    result.indptr[i + 1] = tot
+    result.indptr[i + 1] = int32(result.indices.len)
 
 proc solve*(A: CscMat, b: seq[float32]): seq[float32] =
   ## Solves Ax = b for sparse matrices, returns x
@@ -99,7 +109,7 @@ when isMainModule:
     CooTriplet(row: 2, col: 0, value: 1.0'f32),
     CooTriplet(row: 2, col: 2, value: 3.0'f32)]
   
-  let A = toCsc(triplets, 3'i32, 3'i32)
+  let A = toCsc(triplets)
   let b = @[4.0'f32, 2.0'f32, 4.0'f32]
   let x = solve(A, b)
   echo "x = ", x
