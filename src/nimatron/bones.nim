@@ -1,5 +1,5 @@
 import pkg/vmath
-import std/sequtils
+import std/[sequtils, algorithm]
 import cotangent_laplacian, sparsemat
 
 type
@@ -94,7 +94,54 @@ proc inferWeightsBhw*(mesh: var SkinningVertices, indices: openArray[uint32], sk
     if potential < 1e-5'f32: continue # I don't realy know correct coefficent, fp math is broken
     lhs.add CooTriplet(row: int32(i), col: int32(i), value: potential)
 
-  discard lhs.toCsc()
+  let mat = lhs.toCsc()
+  var weights = ensureMove rhs # weights have same form as rhs
+  for i in 0..<skeleton.bones.len:
+    weights[i] = solve(mat, weights[i])
+
+  # And now we truncate results part (it common so should be dedicated func in future)
+  # we have:
+  # [
+  #   [w1, w2, w3, w4, ..., wn...]
+  #    ^ - biggest
+  #   [w1, w2, w3, w4, ..., wn, ...]
+  #                         ^ - biggest
+  # ]
+  # need to map it into
+  # [vec4(w1, w2, w3, w4), vec4(wn, w1, w2, w3))
+  # [uvec4(bone 1, bone 2, bone 3, bone 4), uvec4(bone n, bone1, bone 2, bone 4)]
+  for i in 0..<skeleton.bones.len:
+    for j in 0..<weights[i].len:
+      if weights[i][j] > mesh.boneWeights[j][0]:
+        mesh.boneWeights[j][3] = mesh.boneWeights[j][2]
+        mesh.boneWeights[j][2] = mesh.boneWeights[j][1]
+        mesh.boneWeights[j][1] = mesh.boneWeights[j][0]
+        mesh.boneWeights[j][0] = weights[i][j]
+        mesh.boneIndices[j][3] = mesh.boneIndices[j][2]
+        mesh.boneIndices[j][2] = mesh.boneIndices[j][1]
+        mesh.boneIndices[j][1] = mesh.boneIndices[j][0]
+        mesh.boneIndices[j][0] = uint32(i)
+      elif weights[i][j] > mesh.boneWeights[j][1]:
+        mesh.boneWeights[j][3] = mesh.boneWeights[j][2]
+        mesh.boneWeights[j][2] = mesh.boneWeights[j][1]
+        mesh.boneWeights[j][1] = weights[i][j]
+        mesh.boneIndices[j][3] = mesh.boneIndices[j][2]
+        mesh.boneIndices[j][2] = mesh.boneIndices[j][1]
+        mesh.boneIndices[j][1] = uint32(i)
+      elif weights[i][j] > mesh.boneWeights[j][2]:
+        mesh.boneWeights[j][3] = mesh.boneWeights[j][2]
+        mesh.boneWeights[j][2] = weights[i][j]
+        mesh.boneIndices[j][3] = mesh.boneIndices[j][2]
+        mesh.boneIndices[j][2] = uint32(i)
+      elif weights[i][j] > mesh.boneWeights[j][3]:
+        mesh.boneWeights[j][3] = weights[i][j]
+        mesh.boneIndices[j][3] = uint32(i)
+
+  for j in 0..<mesh.pos.len:
+    var total: float32 = 0
+    for k in 0..<4: total += mesh.boneWeights[j][k]
+    if total > 1e-5'f32:
+      mesh.boneWeights[j] /= total
 
 # proc inferWeightsBbw*(mesh: var SkinningMesh) =
 #   # implements BBW (Bounded Biharmonic Weights)
