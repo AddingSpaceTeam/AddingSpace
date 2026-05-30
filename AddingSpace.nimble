@@ -29,3 +29,4 @@ after install:
     exec "git clone --depth 1 --branch v4.4.2 " &
       "https://github.com/KhronosGroup/KTX-Software.git deps/vendor/KTX-Software"
 
+requires "https://github.com/ASVIEST/nimsuperlu"
