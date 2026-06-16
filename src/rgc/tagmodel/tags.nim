@@ -21,6 +21,8 @@ type
     BufferTagId
     DotTagId
     ColorTagId
+    ImagebarrierTagId
+    BufferbarrierTagId
 
 const
   TagData*: array[TagEnum, (string, int)] = [
@@ -42,5 +44,7 @@ const
     ("image", 15),
     ("buffer", 16),
     ("dot", 17),
-    ("color", 18)
+    ("color", 18),
+    ("imagebarrier", 19),
+    ("bufferbarrier", 20)
   ]

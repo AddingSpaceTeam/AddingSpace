@@ -18,3 +18,5 @@
 | `(buffer T)` | RgcType | buffer resource of T |
 | `(dot I I)` | RgcExpr | owner.resource |
 | `(color A A A A)` | RgcExpr | RGBA clear color value |
+| `(imagebarrier )` | [Dummy]LowExpr | barrier for image
+| `(bufferbarrier )` | [Dummy]LowExpr | barrier for buffer

@@ -149,6 +149,8 @@ proc genTags(inputName, tagsOutput, modelOutput: string) =
     let affectedEnums = parts[2].split(",")
     assert affectedEnums.len > 0
     for affected in affectedEnums:
+      if affected.strip().startsWith("[Dummy]"):
+        continue
       let e = shortcutToEnumList(affected)
       enumDecls[e].add EnumField(
         name: toNimName(tagName, toSuffix(e)[0]),
