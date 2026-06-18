@@ -96,3 +96,18 @@ There are some questions:
 - Should it be bounded with rendering library and call it internals directly or
 more abstract and use some interface? Answer: bound it currently, but when it will partialy working, move to interface
 - Maybe unify transferSrc, transferDst into `transfer`, knowing that it in input/output, but it can lead to problems
+
+# backend agnostic IR draft
+It should be simply lowered into code in different graphics API and radicaly simplify mental load and debugging of RGC.
+Lowered code have these properties:
+- no passes (it was topologicly sorted and flatten)
+- barrier annotations
+- Something for msaa (I don't know what)
+
+
+```
+(stmts
+  (makeImage :x (usages Depth Sampled))
+  ...
+)
+```

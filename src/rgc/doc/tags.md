@@ -2,7 +2,7 @@
 |-----|-------|-------------|
 | `(pass D . . . S)` | RgcStmt | pass declaration |
 | `(module D . . S)` | RgcStmt | module declaration |
-| `(stmts S*)` | RgcStmt | statement list |
+| `(stmts S*)` | RgcStmt, [Dummy]LowRgcStmt | statement list |
 | `(input D T)` | RgcStmt | pass input declaration |
 | `(output D T)` | RgcStmt | pass output declaration |
 | `(use Y .Y)` | RgcStmt | module usage declaration |
@@ -18,5 +18,9 @@
 | `(buffer T)` | RgcType | buffer resource of T |
 | `(dot I I)` | RgcExpr | owner.resource |
 | `(color A A A A)` | RgcExpr | RGBA clear color value |
-| `(imagebarrier )` | [Dummy]LowExpr | barrier for image
-| `(bufferbarrier )` | [Dummy]LowExpr | barrier for buffer
+| `(makeImage )` | [Dummy]LowRgcStmt | create image
+| `(makeBuffer )` | [Dummy]LowRgcStmt | create buffer
+| `(imageBarrier )` | [Dummy]LowRgcStmt | barrier for image
+| `(bufferBarrier )` | [Dummy]LowRgcStmt | barrier for buffer
+| `(attachmentColor R G B A)` | [Dummy]LowRgcExpr | color attachment
+| `(attachmentDepth V)` | [Dummy]LowRgcExpr | depth attachment

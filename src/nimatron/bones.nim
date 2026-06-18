@@ -12,7 +12,7 @@ type
   Skeleton* = object
     bones*: seq[Bone]
 
-  SkinningVertices = object
+  SkinningVertices* = object
     # Vertex data that need for skinning (LBS)
     # because LBS need BoneIndices, BoneWeights, Position, Normal
     # We use SoA here instead of AoS.
@@ -27,10 +27,10 @@ type
     # use ensureMove whenever possible (likely happen for pos, normals)
     # when init 
 
-    boneIndices: seq[Uvec4]
-    boneWeights: seq[Vec4]
-    pos: seq[Vec3]
-    normal: seq[Vec3]
+    boneIndices*: seq[Uvec4]
+    boneWeights*: seq[Vec4]
+    pos*: seq[Vec3]
+    normal*: seq[Vec3]
 
 proc findNearestBone(p: Vec3, skeleton: Skeleton): (BoneId, Vec3) =
   # nearest bone + closest point on bone
