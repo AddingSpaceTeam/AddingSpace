@@ -1,3 +1,8 @@
+# Copyright 2024 Andreas Rumpf
+# SPDX-FileCopyrightText: 2026 AddingSpaceTeam
+#
+# SPDX-License-Identifier: MPL-2.0
+
 ## This file represent RGIR - format that basicly nimony's NIF,
 ## generated from nimony/src/lib code with claude opus 4.6 and gpt 5.4
 ## This code remains largely identical to the actual nimony source

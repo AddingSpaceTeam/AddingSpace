@@ -1,8 +1,7 @@
-#       Nif library
-# (c) Copyright 2024 Andreas Rumpf
+# Copyright 2024 Andreas Rumpf
+# SPDX-FileCopyrightText: 2026 AddingSpaceTeam
 #
-# See the file "license.txt", included in this
-# distribution, for details about the copyright.
+# SPDX-License-Identifier: MPL-2.0
 
 ## A BiTable is a table that can be seen as an optimized pair
 ## of `(Table[Id, Val], Table[Val, Id])`.

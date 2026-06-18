@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 AddingSpaceTeam
+#
+# SPDX-License-Identifier: MPL-2.0
+
 import pkg/vmath
 import std/[sequtils, algorithm]
 import cotangent_laplacian, sparsemat

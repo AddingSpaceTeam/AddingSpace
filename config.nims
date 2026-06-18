@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 AddingSpaceTeam
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 import std/[os, strutils]
 
 let hostIsWindows = getEnv("OS") == "Windows_NT"

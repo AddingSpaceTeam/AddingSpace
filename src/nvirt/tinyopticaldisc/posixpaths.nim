@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 AddingSpaceTeam
+#
+# SPDX-License-Identifier: MIT
+
 import pathnorm
 
 template endsWithPosixSep(path: string): bool =

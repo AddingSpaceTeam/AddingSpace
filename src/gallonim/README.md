@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 AddingSpaceTeam
+
+SPDX-License-Identifier: MIT
+-->
+
 gallonim (GPU ALLOcator NIM) is a GPU memory allocator written in Nim.
 It supports Vulkan and maybe will support DirectX 12.
 

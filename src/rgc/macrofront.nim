@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 AddingSpaceTeam
+#
+# SPDX-License-Identifier: MPL-2.0
+
 ## Compile dsl to rgir
 {.experimental: "dynamicBindSym".}
 import ir, sem, semvm, bitabs, vkcodegen

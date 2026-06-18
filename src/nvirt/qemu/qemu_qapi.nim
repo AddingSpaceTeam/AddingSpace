@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 AddingSpaceTeam
+#
+# SPDX-License-Identifier: MIT
+
 ## Auto-generated QAPI bindings.
 ## Do not edit by hand
 

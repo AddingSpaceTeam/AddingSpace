@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 AddingSpaceTeam
+
+SPDX-License-Identifier: MPL-2.0
+-->
+
 # Render graph dsl lang
 And it compiles dsl code to actual render graph
 

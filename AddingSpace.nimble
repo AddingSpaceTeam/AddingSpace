@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 AddingSpaceTeam
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 when defined(atlas):
   # dirty hack workaround of bug:
   # `after install` runs nim e AddingSpace.nimble

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 AddingSpaceTeam
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # libktx bindings for texture loading
 when not defined(feature.AddingSpace.forge):
   {.passL: "-lktx".}

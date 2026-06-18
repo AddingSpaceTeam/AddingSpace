@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 AddingSpaceTeam
+
+SPDX-License-Identifier: MPL-2.0
+-->
+
 | Tag | Enums | Description |
 |-----|-------|-------------|
 | `(pass D . . . S)` | RgcStmt | pass declaration |

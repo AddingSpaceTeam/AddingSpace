@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 AddingSpaceTeam
+#
+# SPDX-License-Identifier: MIT
+
 # Passthrough Allocator
 # port of https://kylehalladay.com/blog/tutorial/2017/12/13/Custom-Allocators-Vulkan.html
 import gpualloc

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 AddingSpaceTeam
+#
+# SPDX-License-Identifier: MPL-2.0
+
 ## This tool generates the `rgc` tag enums from `doc/tags.md`.
 
 import std/[os, sets, strutils]

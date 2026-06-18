@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 AddingSpaceTeam
+#
+# SPDX-License-Identifier: MIT
+
 # ECMA-119 spec is so bad...
 # This module implements ISO 9660
 # API:

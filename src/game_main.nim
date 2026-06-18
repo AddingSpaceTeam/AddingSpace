@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 AddingSpaceTeam
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 ## The module that launches the game
 
 import std/[math, sequtils, sets, strutils, times]

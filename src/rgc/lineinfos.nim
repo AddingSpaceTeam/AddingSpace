@@ -1,8 +1,7 @@
-#       Nif library
-# (c) Copyright 2024 Andreas Rumpf
+# Copyright 2024 Andreas Rumpf
+# SPDX-FileCopyrightText: 2026 AddingSpaceTeam
 #
-# See the file "license.txt", included in this
-# distribution, for details about the copyright.
+# SPDX-License-Identifier: MPL-2.0
 
 # For the line information we use 32 bits. They are used as follows:
 # Bit 0 (AsideBit): If we have inline line information or not.

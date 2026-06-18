@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 AddingSpaceTeam
+#
+# SPDX-License-Identifier: MPL-2.0
+
 import ir, bitabs, lineinfos, types
 import tagmodel/model
 import std/[algorithm, tables, deques, strutils, hashes]

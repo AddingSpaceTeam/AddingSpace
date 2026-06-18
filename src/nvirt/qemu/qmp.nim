@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 AddingSpaceTeam
+#
+# SPDX-License-Identifier: MIT
+
 import std/[deques, json, nativesockets, net, options]
 
 type

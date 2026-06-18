@@ -1,11 +1,7 @@
+# Copyright 2018 Andreas Rumpf
+# SPDX-FileCopyrightText: 2026 AddingSpaceTeam
 #
-#
-#            Nim's Runtime Library
-#        (c) Copyright 2018 Andreas Rumpf
-#
-#    See the file "copying.txt", included in this
-#    distribution, for details about the copyright.
-#
+# SPDX-License-Identifier: MIT
 
 ## OS-Path normalization. Used by `os.nim` but also
 ## generally useful for dealing with paths.

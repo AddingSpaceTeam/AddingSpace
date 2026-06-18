@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 AddingSpaceTeam
+#
 # SPDX-License-Identifier: MIT
 type
   MemoryLocation* = enum

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 AddingSpaceTeam
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 import std/strutils
 
 const forgePath {.strdefine.} = if buildOs == "windows": "forge.exe" else: "forge"

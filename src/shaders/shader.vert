@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 AddingSpaceTeam
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #version 460
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_buffer_reference2 : require

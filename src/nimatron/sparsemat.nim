@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 AddingSpaceTeam
+#
+# SPDX-License-Identifier: MPL-2.0
+
 # TODO: rewrite it into one SparseMat structure that uses
 # https://hforsten.com/in-place-sparse-matrix-conversion-algorithm.html
 import pkg/nimsuperlu
