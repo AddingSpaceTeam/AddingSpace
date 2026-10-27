@@ -11,12 +11,16 @@ It's built around a simple idea: practical GPU allocation does not always requir
 
 A lot of allocator complexity comes from more advanced strategies such as TLSF.
 
-Currently supported:
-- Passthrough allocator (no allocator but with allocator api)
+Supported allocators:
+- `PassthroughGpuAllocator` (no allocator but with allocator api)
+- `BlockGpuAllocator` allocator (allocate blocks grouped by memory type and run suballocator for each block)
+
+Supported suballocators:
+- `LinearSubAllocator` (linear/arena suballocator, can't perform deallocation by offset)
 
 Planned:
-- Free-list allocator
+- Free-list suballocator
 
 Considered:
 - Dedicated block allocator for special cases
-- TLSF allocator, if it proves necessary, good article: https://ricefields.me/2024/04/20/tlsf-allocator.html
+- TLSF suballocator, if it proves necessary, good article: https://ricefields.me/2024/04/20/tlsf-allocator.html
