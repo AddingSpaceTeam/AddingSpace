@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: 2026 AddingSpaceTeam
 #
 # SPDX-License-Identifier: MIT
+import std/options
+
 type
   MemoryLocation* = enum
     Unknown
@@ -41,4 +43,8 @@ type
     proc init(_: type Self, backend: B): Self
     proc alloc(a: var Self, desc: AllocDesc): Allocation
     proc free(a: var Self, alloc: Allocation)
-    proc realloc(a: var Self, alloc: Allocation, newSize: uint64): Allocation
+
+  SubAllocator* = concept
+    proc alloc(a: var Self, size: uint, alignment: uint): Option[uint]
+    proc free(a: var Self, offset: uint)
+    proc hasAllocs(a: Self): bool

@@ -21,8 +21,9 @@ proc init*(
 func supportsMemoryType(typeBits: uint32, index: int): bool {.inline.} =
   (typeBits and (1'u32 shl index.uint32)) != 0'u32
 
-proc findMemoryType*(b: VulkanAllocModel, typeBits: uint32,
-                     location: MemoryLocation): int32 =
+proc findMemoryType*(
+    b: VulkanAllocModel, typeBits: uint32,
+    location: MemoryLocation): int32 =
   let requiredFlags =
     case location
     of GpuOnly:  VkMemoryPropertyFlags{DeviceLocalBit}
@@ -61,9 +62,8 @@ proc freeDeviceMemory*(b: var VulkanAllocModel, handle: pointer) =
   vkFreeMemory(b.device, cast[VkDeviceMemory](handle), nil)
 
 proc mapMemory*(
-  b: var VulkanAllocModel, handle: pointer,
-  offset, size: uint64): pointer =
-
+    b: var VulkanAllocModel, handle: pointer,
+    offset, size: uint64): pointer =
   result = nil
   if vkMapMemory(
     b.device, cast[VkDeviceMemory](handle),

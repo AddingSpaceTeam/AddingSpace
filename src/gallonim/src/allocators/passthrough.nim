@@ -7,15 +7,15 @@
 import gpualloc
 
 type
-  PassthroughGpuAllocator*[B] = object
+  PassthroughGpuAllocator*[B: BackendAllocModel] = object
     backend*: B
     # debug info:
     totalAllocated*: uint64
     numAllocs*: uint32
 
-proc init*[B](
-  _: type PassthroughGpuAllocator[B],
-  backend: B): PassthroughGpuAllocator[B] =
+proc init*[B: BackendAllocModel](
+    _: type PassthroughGpuAllocator[B],
+    backend: B): auto =
   PassthroughGpuAllocator[B](backend: backend)
 
 proc alloc*[B](a: var PassthroughGpuAllocator[B], desc: AllocDesc): Allocation =
@@ -46,17 +46,3 @@ proc free*[B](a: var PassthroughGpuAllocator[B], alloc: Allocation) =
   a.backend.freeDeviceMemory(alloc.handle)
   a.totalAllocated -= alloc.size
   dec a.numAllocs
-
-proc realloc*[B](
-  a: var PassthroughGpuAllocator[B], alloc: Allocation,
-  newSize: uint64): Allocation =
-  let desc = AllocDesc(
-    size: newSize,
-    alignment: 0'u64,
-    memoryTypeBits: 1'u32 shl alloc.memoryTypeIndex,
-    location: alloc.location)
-
-  result = a.alloc(desc)
-  if alloc.mappedPtr != nil and result.mappedPtr != nil:
-    copyMem(result.mappedPtr, alloc.mappedPtr, min(alloc.size, newSize))
-  a.free(alloc)
